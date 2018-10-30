@@ -9584,6 +9584,49 @@ bool kvm_vector_hashing_enabled(void)
 }
 EXPORT_SYMBOL_GPL(kvm_vector_hashing_enabled);
 
+static int complete_sev_es_emulated_ins(struct kvm_vcpu *vcpu)
+{
+	memcpy(vcpu->arch.guest_ins_data, vcpu->arch.pio_data, vcpu->arch.pio.count * vcpu->arch.pio.size);
+	vcpu->arch.pio.count = 0;
+
+	return 1;
+}
+
+static int sev_es_outs(struct kvm_vcpu *vcpu, unsigned int size, unsigned int port,
+		       void *data,  unsigned int count)
+{
+	int ret;
+
+	ret = emulator_pio_out_emulated(&vcpu->arch.emulate_ctxt, size, port, data, count);
+	vcpu->arch.pio.count = 0;
+
+	return 0;
+}
+
+static int sev_es_ins(struct kvm_vcpu *vcpu, unsigned int size, unsigned int port,
+		      void *data,  unsigned int count)
+{
+	int ret;
+
+	ret = emulator_pio_in_emulated(&vcpu->arch.emulate_ctxt, size, port, data, count);
+	if (ret) {
+		vcpu->arch.pio.count = 0;
+	} else {
+		vcpu->arch.guest_ins_data = data;
+		vcpu->arch.complete_userspace_io = complete_sev_es_emulated_ins;
+	}
+
+	return 0;
+}
+
+int sev_es_string_io(struct kvm_vcpu *vcpu, unsigned int size, unsigned int port,
+		     void *data,  unsigned int count, int in)
+{
+	return in ? sev_es_ins(vcpu, size, port, data, count)
+		  : sev_es_outs(vcpu, size, port, data, count);
+}
+EXPORT_SYMBOL_GPL(sev_es_string_io);
+
 static int complete_sev_es_emulated_mmio(struct kvm_vcpu *vcpu)
 {
 	struct kvm_run *run = vcpu->run;
