@@ -14108,6 +14108,11 @@ static bool vmx_reg_write_override(struct kvm_vcpu *vcpu, enum kvm_reg reg,
 	return false;
 }
 
+static bool vmx_allow_debug(struct kvm *kvm)
+{
+	return true;
+}
+
 static struct kvm_x86_ops vmx_x86_ops __ro_after_init = {
 	.cpu_has_kvm_support = cpu_has_kvm_support,
 	.disabled_by_bios = vmx_disabled_by_bios,
@@ -14256,6 +14261,8 @@ static struct kvm_x86_ops vmx_x86_ops __ro_after_init = {
 
 	.reg_read_override = vmx_reg_read_override,
 	.reg_write_override = vmx_reg_write_override,
+
+	.allow_debug = vmx_allow_debug,
 };
 
 static void vmx_cleanup_l1d_flush(void)

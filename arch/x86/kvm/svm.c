@@ -2558,6 +2558,9 @@ static void svm_set_dr6(struct kvm_vcpu *vcpu, unsigned long value)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
 
+	if (vcpu->arch.vmsa_encrypted)
+		return;
+
 	vmsa_reg_write(svm, VMSA_REG_DR6, value);
 	mark_dirty(svm->vmcb, VMCB_DR);
 }
@@ -2570,6 +2573,10 @@ static void svm_sync_dirty_debug_regs(struct kvm_vcpu *vcpu)
 	get_debugreg(vcpu->arch.db[1], 1);
 	get_debugreg(vcpu->arch.db[2], 2);
 	get_debugreg(vcpu->arch.db[3], 3);
+
+	if (vcpu->arch.vmsa_encrypted)
+		return;
+
 	vcpu->arch.dr6 = svm_get_dr6(vcpu);
 	vcpu->arch.dr7 = vmsa_reg_read(svm, VMSA_REG_DR7);
 
@@ -2580,6 +2587,9 @@ static void svm_sync_dirty_debug_regs(struct kvm_vcpu *vcpu)
 static void svm_set_dr7(struct kvm_vcpu *vcpu, unsigned long value)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
+
+	if (vcpu->arch.vmsa_encrypted)
+		return;
 
 	vmsa_reg_write(svm, VMSA_REG_DR7, value);
 	mark_dirty(svm->vmcb, VMCB_DR);
@@ -7013,6 +7023,11 @@ static void svm_reg_write(struct kvm_vcpu *vcpu, enum kvm_reg reg,
 	vmsa_reg_write(to_svm(vcpu), vcpu_to_vmsa_reg(reg), val);
 }
 
+static bool svm_allow_debug(struct kvm *kvm)
+{
+	return !sev_es_guest(kvm);
+}
+
 static int svm_unregister_enc_region(struct kvm *kvm,
 				     struct kvm_enc_region *range)
 {
@@ -7176,6 +7191,8 @@ static struct kvm_x86_ops svm_x86_ops __ro_after_init = {
 	.reg_read = svm_reg_read,
 	.reg_write_override = svm_reg_write_override,
 	.reg_write = svm_reg_write,
+
+	.allow_debug = svm_allow_debug,
 };
 
 static int __init svm_init(void)
