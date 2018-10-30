@@ -470,6 +470,7 @@ void __init sme_encrypt_kernel(struct boot_params *bp)
 
 void __init sme_enable(struct boot_params *bp)
 {
+#ifndef CONFIG_AMD_SEV_ES_GUEST
 	const char *cmdline_ptr, *cmdline_arg, *cmdline_on, *cmdline_off;
 	unsigned int eax, ebx, ecx, edx;
 	unsigned long feature_mask;
@@ -569,4 +570,10 @@ void __init sme_enable(struct boot_params *bp)
 		sme_me_mask = active_by_default ? me_mask : 0;
 
 	physical_mask &= ~sme_me_mask;
+#else
+	sme_me_mask = 1UL << 47;
+	physical_mask &= ~sme_me_mask;
+	sev_enabled = true;
+	sev_es_enabled = true;
+#endif
 }
