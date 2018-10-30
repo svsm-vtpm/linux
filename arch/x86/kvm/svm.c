@@ -4938,6 +4938,35 @@ static void svm_get_exit_info(struct kvm_vcpu *vcpu, u64 *info1, u64 *info2)
 	*info2 = control->exit_info_2;
 }
 
+static void *setup_vmgexit_scratch(struct vcpu_svm *svm)
+{
+	struct ghcb *ghcb = svm->ghcb;
+	u64 scratch_gpa, ghcb_scratch_beg, ghcb_scratch_end;
+	void *scratch_va;
+
+	scratch_gpa = ghcb->save.sw_scratch;
+
+	ghcb_scratch_beg = svm->vmcb->control.ghcb_gpa +
+			   offsetof(struct ghcb, shared_buffer) - 1;
+	ghcb_scratch_end = svm->vmcb->control.ghcb_gpa +
+			   offsetof(struct ghcb, reserved_1);
+
+	if ((scratch_gpa > ghcb_scratch_beg) &&
+	    (scratch_gpa < ghcb_scratch_end)) {
+		/*
+		 * If scratch begins within the GHCB, it must be completely
+		 * contained in the GHCB.
+		 */
+		scratch_va = (void *)svm->ghcb;
+		scratch_va += (scratch_gpa - svm->vmcb->control.ghcb_gpa);
+		return scratch_va;
+	} else {
+		WARN(1, "svm: vmgexit: SW_SCRATCH (%#llx) is outside of the GHCB (%#llx - %#llx)\n",
+		     scratch_gpa, ghcb_scratch_beg, ghcb_scratch_end);
+		return NULL;
+	}
+}
+
 static int handle_vmgexit_msr_protocol(struct vcpu_svm *svm)
 {
 	struct vmcb_control_area *control = &svm->vmcb->control;
@@ -5051,6 +5080,18 @@ static int handle_vmgexit(struct vcpu_svm *svm)
 
 	ret = -EINVAL;
 	switch (ghcb->save.sw_exit_code) {
+	case SVM_VMGEXIT_MMIO_READ:
+		ret = sev_es_mmio_read(&svm->vcpu,
+				       svm->vmcb->control.exit_info_1,
+				       svm->vmcb->control.exit_info_2,
+				       setup_vmgexit_scratch(svm));
+		break;
+	case SVM_VMGEXIT_MMIO_WRITE:
+		ret = sev_es_mmio_write(&svm->vcpu,
+					svm->vmcb->control.exit_info_1,
+					svm->vmcb->control.exit_info_2,
+				        setup_vmgexit_scratch(svm));
+		break;
 	case SVM_VMGEXIT_UNSUPPORTED_EVENT:
 		break;
 	default:
