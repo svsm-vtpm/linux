@@ -662,12 +662,18 @@ static inline bool ghcb_reg_is_valid(struct ghcb *ghcb, enum vmsa_reg reg)
 {
 	unsigned int index = reg / 8;
 	unsigned int shift = reg % 8;
+	bool ret;
 
 	if (WARN(reg > VMSA_REG_XCR0,
 		 "%s: GHCB register number, %u, is not valid\n", __func__, reg))
 		return false;
 
-	return (ghcb->save.valid_bitmap[index] & (1 << shift));
+	ret = (ghcb->save.valid_bitmap[index] & (1 << shift));
+	if (!ret)
+		printk("*** DEBUG: %s:%u - reg=%u, index=%u, bit=%u, valid_bitmap_entry=%02hhx\n",
+			__func__, __LINE__, reg, index, shift, ghcb->save.valid_bitmap[index]);
+
+	return ret;
 }
 
 static inline bool svm_ghcb_reg_is_valid(struct vcpu_svm *svm, enum vmsa_reg reg)
@@ -746,8 +752,11 @@ static inline void vmsa_reg_write(struct vcpu_svm *svm, enum vmsa_reg reg,
 {
 	u64 *save = (u64 *)get_vmsa(svm);
 
-	if (svm->vcpu.arch.vmsa_encrypted)
+	if (svm->vcpu.arch.vmsa_encrypted) {
+		WARN(reg == VMSA_REG_RIP, "vcpu%u - should never be writing RIP under SEV-ES\n", svm->vcpu.vcpu_id);
+
 		svm_ghcb_reg_set_valid(svm, reg);
+	}
 
 	if (!sev_es_guest(svm->vcpu.kvm))
 		WARN(reg > VMSA_REG_LAST_EXCP_TO,
