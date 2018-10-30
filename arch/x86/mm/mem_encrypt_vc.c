@@ -508,6 +508,12 @@ static int vmg_ioio(struct ghcb *ghcb, unsigned long ghcb_pa,
 	return 0;
 }
 
+static int vmg_wbinvd(struct ghcb *ghcb, unsigned long ghcb_pa,
+		      struct pt_regs *regs, struct insn *insn)
+{
+	return vmg_exit(ghcb, SVM_EXIT_WBINVD, 0, 0);
+}
+
 static int vmg_mmio(struct ghcb *ghcb, unsigned long ghcb_pa,
 		    struct pt_regs *regs, struct insn *insn)
 {
@@ -632,6 +638,14 @@ int sev_es_vc_exception(struct pt_regs *regs, long error_code)
 	case SVM_EXIT_IOIO:
 		vmg_insn_init(insn, insn_buffer, regs->ip);
 		ret = vmg_ioio(ghcb, ghcb_pa, regs, insn);
+		if (ret)
+			break;
+
+		regs->ip += insn->length;
+		break;
+	case SVM_EXIT_WBINVD:
+		vmg_insn_init(insn, insn_buffer, regs->ip);
+		ret = vmg_wbinvd(ghcb, ghcb_pa, regs, insn);
 		if (ret)
 			break;
 
