@@ -28,6 +28,7 @@
 #include <asm/processor-flags.h>
 #include <asm/msr.h>
 #include <asm/cmdline.h>
+#include <asm/mem_encrypt_vc.h>
 
 #include "mm_internal.h"
 
@@ -386,6 +387,9 @@ void __init mem_encrypt_init(void)
 	if (!sme_me_mask)
 		return;
 
+	/* Initialize the GHCB pages for an SEV-ES guest */
+	ghcb_init();
+
 	/* Call into SWIOTLB to update the SWIOTLB DMA buffers */
 	swiotlb_update_mem_attributes();
 
@@ -411,4 +415,3 @@ void __init mem_encrypt_init(void)
 
 	pr_info("AMD %s active\n", msg);
 }
-

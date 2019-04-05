@@ -24,6 +24,7 @@
 #ifndef __ASSEMBLY__
 #include <asm/x86_init.h>
 
+extern unsigned char early_ghcb[PAGE_SIZE];
 extern pgd_t early_top_pgt[PTRS_PER_PGD];
 int __init __early_make_pgtable(unsigned long address, pmdval_t pmd);
 

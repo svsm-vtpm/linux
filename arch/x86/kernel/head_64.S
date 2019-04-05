@@ -461,6 +461,9 @@ NEXT_PAGE(level1_fixmap_pgt)
 	.fill	512,8,0
 	.endr
 
+NEXT_PAGE(early_ghcb)
+	.fill	512,8,0
+
 #undef PMDS
 
 	.data
