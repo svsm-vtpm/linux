@@ -729,6 +729,9 @@ struct kvm_vcpu_arch {
 
 	/* Flush the L1 Data cache for L1TF mitigation on VMENTER */
 	bool l1tf_flush_l1d;
+
+	/* SEV-ES support */
+	bool vmsa_encrypted;
 };
 
 struct kvm_lpage_info {
@@ -1133,6 +1136,13 @@ struct kvm_x86_ops {
 	int (*mem_enc_unreg_region)(struct kvm *kvm, struct kvm_enc_region *argp);
 
 	int (*get_msr_feature)(struct kvm_msr_entry *entry);
+
+	bool (*reg_read_override)(struct kvm_vcpu *vcpu, enum kvm_reg reg);
+	unsigned long (*reg_read)(struct kvm_vcpu *vcpu, enum kvm_reg reg);
+	bool (*reg_write_override)(struct kvm_vcpu *vcpu, enum kvm_reg reg,
+				   unsigned long val);
+	void (*reg_write)(struct kvm_vcpu *vcpu, enum kvm_reg reg,
+			  unsigned long val);
 };
 
 struct kvm_arch_async_pf {

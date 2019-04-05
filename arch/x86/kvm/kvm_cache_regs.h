@@ -10,6 +10,9 @@
 static inline unsigned long kvm_register_read(struct kvm_vcpu *vcpu,
 					      enum kvm_reg reg)
 {
+	if (kvm_x86_ops->reg_read_override(vcpu, reg))
+		return kvm_x86_ops->reg_read(vcpu, reg);
+
 	if (!test_bit(reg, (unsigned long *)&vcpu->arch.regs_avail))
 		kvm_x86_ops->cache_reg(vcpu, reg);
 
@@ -20,6 +23,9 @@ static inline void kvm_register_write(struct kvm_vcpu *vcpu,
 				      enum kvm_reg reg,
 				      unsigned long val)
 {
+	if (kvm_x86_ops->reg_write_override(vcpu, reg, val))
+		return kvm_x86_ops->reg_write(vcpu, reg, val);
+
 	vcpu->arch.regs[reg] = val;
 	__set_bit(reg, (unsigned long *)&vcpu->arch.regs_dirty);
 	__set_bit(reg, (unsigned long *)&vcpu->arch.regs_avail);
