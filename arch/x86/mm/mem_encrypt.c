@@ -45,6 +45,8 @@ EXPORT_SYMBOL_GPL(sev_enable_key);
 bool sev_enabled __section(.data);
 bool sev_es_enabled __section(.data);
 
+u64 sev_es_ap_jump_table_pa __section(.data) = 0;
+
 /* Buffer used for early in-place encryption by BSP, no locking needed */
 static char sme_early_buffer[PAGE_SIZE] __aligned(PAGE_SIZE);
 

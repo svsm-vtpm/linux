@@ -24,6 +24,7 @@
 extern u64 sme_me_mask;
 extern bool sev_enabled;
 extern bool sev_es_enabled;
+extern u64 sev_es_ap_jump_table_pa;
 
 void sme_encrypt_execute(unsigned long encrypted_kernel_vaddr,
 			 unsigned long decrypted_kernel_vaddr,
