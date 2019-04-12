@@ -110,6 +110,7 @@ struct __attribute__ ((__packed__)) vmcb_control_area {
 #define GHCB_MSR_INFO_MASK			((1 << 12) - 1)
 
 #define GHCB_MSR_SEV_INFO_RESP			0x001
+#define GHCB_MSR_SEV_INFO_REQ			0x002
 #define GHCB_MSR_VER_MAX_POS			48
 #define GHCB_MSR_VER_MAX_MASK			0xffff
 #define GHCB_MSR_VER_MIN_POS			32
