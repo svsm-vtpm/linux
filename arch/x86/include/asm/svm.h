@@ -132,6 +132,12 @@ struct __attribute__ ((__packed__)) vmcb_control_area {
 #define GHCB_MSR_CPUID_REG_POS			30
 #define GHCB_MSR_CPUID_REG_MASK			0x3
 
+#define GHCB_MSR_TERM_REQ			0x100
+#define GHCB_MSR_TERM_REASON_SET_POS		12
+#define GHCB_MSR_TERM_REASON_SET_MASK		0xf
+#define GHCB_MSR_TERM_REASON_POS		16
+#define GHCB_MSR_TERM_REASON_MASK		0xff
+
 #define TLB_CONTROL_DO_NOTHING 0
 #define TLB_CONTROL_FLUSH_ALL_ASID 1
 #define TLB_CONTROL_FLUSH_ASID 3
