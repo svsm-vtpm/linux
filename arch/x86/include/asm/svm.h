@@ -123,6 +123,15 @@ struct __attribute__ ((__packed__)) vmcb_control_area {
 	 (((_cbit) & GHCB_MSR_CBIT_MASK) << GHCB_MSR_CBIT_POS) |	\
 	 GHCB_MSR_SEV_INFO_RESP)
 
+#define GHCB_MSR_CPUID_REQ			0x004
+#define GHCB_MSR_CPUID_RESP			0x005
+#define GHCB_MSR_CPUID_FUNC_POS			32
+#define GHCB_MSR_CPUID_FUNC_MASK		0xffffffff
+#define GHCB_MSR_CPUID_VALUE_POS		32
+#define GHCB_MSR_CPUID_VALUE_MASK		0xffffffff
+#define GHCB_MSR_CPUID_REG_POS			30
+#define GHCB_MSR_CPUID_REG_MASK			0x3
+
 #define TLB_CONTROL_DO_NOTHING 0
 #define TLB_CONTROL_FLUSH_ALL_ASID 1
 #define TLB_CONTROL_FLUSH_ASID 3
