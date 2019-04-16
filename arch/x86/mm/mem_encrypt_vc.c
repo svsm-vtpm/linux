@@ -619,6 +619,9 @@ int sev_es_vc_exception(struct pt_regs *regs, long error_code)
 	flags = vmg_init(ghcb);
 
 	switch (error_code) {
+	case SVM_EXIT_EXCP_BASE + DB_VECTOR:
+		ret = vmg_exit(ghcb, SVM_VMGEXIT_NMI_COMPLETE, 0, 0);
+		break;
 	case SVM_EXIT_CPUID:
 		vmg_insn_init(insn, insn_buffer, regs->ip);
 		ret = vmg_cpuid(ghcb, ghcb_pa, regs, insn);
