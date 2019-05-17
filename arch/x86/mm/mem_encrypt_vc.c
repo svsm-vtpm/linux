@@ -280,6 +280,46 @@ static int vmg_cpuid(struct ghcb *ghcb, unsigned long ghcb_pa,
 	return 0;
 }
 
+static int vmg_msr(struct ghcb *ghcb, unsigned long ghcb_pa,
+		   struct pt_regs *regs, struct insn *insn)
+{
+	u64 exit_info_1 = 0;
+	int ret;
+
+	switch (insn->opcode.bytes[1]) {
+	case 0x30:	/* WRMSR */
+		exit_info_1 = 1;
+		ghcb->save.rax = regs->ax;
+		ghcb_reg_set_valid(ghcb, VMSA_REG_RAX);
+		ghcb->save.rdx = regs->dx;
+		ghcb_reg_set_valid(ghcb, VMSA_REG_RDX);
+		/* Fallthrough */
+	case 0x32:	/* RDMSR */
+		ghcb->save.rcx = regs->cx;
+		ghcb_reg_set_valid(ghcb, VMSA_REG_RCX);
+		break;
+	default:
+		vmg_exit(ghcb, SVM_VMGEXIT_UNSUPPORTED_EVENT, SVM_EXIT_MSR, insn->opcode.bytes[0]);
+		BUG();
+	}
+
+	ret = vmg_exit(ghcb, SVM_EXIT_MSR, exit_info_1, 0);
+	if (ret)
+		return ret;
+
+	if (!exit_info_1) {
+		if (!ghcb_reg_is_valid(ghcb, VMSA_REG_RAX) ||
+		    !ghcb_reg_is_valid(ghcb, VMSA_REG_RDX)) {
+			vmg_exit(ghcb, SVM_VMGEXIT_UNSUPPORTED_EVENT, SVM_EXIT_MSR, 1);
+			BUG();
+		}
+		regs->ax = ghcb->save.rax;
+		regs->dx = ghcb->save.rdx;
+	}
+
+	return 0;
+}
+
 #define IOIO_TYPE_STR	(1 << 2)
 #define IOIO_TYPE_IN	1
 #define IOIO_TYPE_INS	(IOIO_TYPE_IN | IOIO_TYPE_STR)
@@ -581,6 +621,9 @@ int sev_es_vc_exception(struct pt_regs *regs, long error_code)
 	switch (error_code) {
 	case SVM_EXIT_CPUID:
 		nae_exit = vmg_cpuid;
+		break;
+	case SVM_EXIT_MSR:
+		nae_exit = vmg_msr;
 		break;
 	case SVM_EXIT_IOIO:
 		nae_exit = vmg_ioio;
