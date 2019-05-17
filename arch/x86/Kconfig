@@ -1522,6 +1522,12 @@ config ARCH_USE_MEMREMAP_PROT
 	def_bool y
 	depends on AMD_MEM_ENCRYPT
 
+config AMD_SEV_ES_GUEST
+	bool "Guest SEV-ES support hacks"
+	depends on AMD_MEM_ENCRYPT
+	---help---
+	  SEV-ES hacks for guest
+
 # Common NUMA Features
 config NUMA
 	bool "Numa Memory Allocation and Scheduler Support"
@@ -2105,7 +2111,7 @@ config RELOCATABLE
 
 config RANDOMIZE_BASE
 	bool "Randomize the address of the kernel image (KASLR)"
-	depends on RELOCATABLE
+	depends on RELOCATABLE && !AMD_SEV_ES_GUEST
 	default y
 	---help---
 	  In support of Kernel Address Space Layout Randomization (KASLR),
