@@ -27,6 +27,14 @@
 #include "sp-dev.h"
 #include "psp-dev.h"
 
+static int tmr = 1;
+module_param(tmr, int, S_IWUSR | S_IRUGO);
+MODULE_PARM_DESC(tmr, " Allocate TMR if SEV-ES is supported (any non-zero value, default=1)");
+
+static int reset;
+module_param(reset, int, S_IWUSR | S_IRUGO);
+MODULE_PARM_DESC(reset, " Perform PLATFORM_RESET before INIT (any non-zero value)");
+
 #define SEV_VERSION_GREATER_OR_EQUAL(_maj, _min)	\
 		((psp_master->api_major) >= _maj &&	\
 		 (psp_master->api_minor) >= _min)
@@ -114,6 +122,7 @@ static int sev_wait_cmd_ioc(struct psp_device *psp,
 		return -ETIMEDOUT;
 
 	*reg = ioread32(psp->io_regs + psp->vdata->cmdresp_reg);
+	dev_dbg(psp->dev, "sev mailbox protocol resp: 0x%08x\n", *reg);
 
 	return 0;
 }
@@ -184,6 +193,7 @@ static int __sev_do_cmd_locked(int cmd, void *data, int *psp_ret)
 	reg = cmd;
 	reg <<= PSP_CMDRESP_CMD_SHIFT;
 	reg |= PSP_CMDRESP_IOC;
+	dev_dbg(psp->dev, "sev mailbox protocol  cmd: 0x%08x\n", reg);
 	iowrite32(reg, psp->io_regs + psp->vdata->cmdresp_reg);
 
 	/* wait for command completion */
@@ -237,6 +247,9 @@ static int __sev_platform_init_locked(int *error)
 	if (psp->sev_state == SEV_STATE_INIT)
 		return 0;
 
+	if (reset)
+		__sev_do_cmd_locked(SEV_CMD_FACTORY_RESET, NULL, error);
+
 	if (sev_es_tmr) {
 		u64 tmr_pa;
 
@@ -246,6 +259,7 @@ static int __sev_platform_init_locked(int *error)
 		 */
 		tmr_pa = __pa(sev_es_tmr);
 		tmr_pa = ALIGN(tmr_pa, SEV_ES_TMR_ALIGN);
+		printk("*** DEBUG: %s:%u:%s - TMR physical address=%#llx\n", __FILE__, __LINE__, __func__, tmr_pa);
 
 		psp->init_cmd_buf.flags |= SEV_INIT_FLAGS_SEV_ES;
 		psp->init_cmd_buf.tmr_address = tmr_pa;
@@ -956,13 +970,15 @@ void psp_pci_init(void)
 		sev_get_api_version();
 
 	/* Obtain the TMR memory area for SEV-ES use */
-	if (boot_cpu_has(X86_FEATURE_SEV_ES)) {
+	if (tmr && boot_cpu_has(X86_FEATURE_SEV_ES)) {
 		sev_es_tmr = kzalloc(SEV_ES_TMR_LEN, GFP_KERNEL);
 		if (!sev_es_tmr) {
 			dev_err(sp->dev,
 				"SEV: failed to allocate the TMR area\n");
 			goto out;
 		}
+		printk("*** DEBUG: %s:%u:%s - SEV-ES TMR=%px, size=%#x\n", __FILE__, __LINE__, __func__,
+			sev_es_tmr, SEV_ES_TMR_LEN);
 	}
 
 	/* Initialize the platform */
