@@ -14097,6 +14097,17 @@ static int vmx_set_nested_state(struct kvm_vcpu *vcpu,
 	return 0;
 }
 
+static bool vmx_reg_read_override(struct kvm_vcpu *vcpu, enum kvm_reg reg)
+{
+	return false;
+}
+
+static bool vmx_reg_write_override(struct kvm_vcpu *vcpu, enum kvm_reg reg,
+				   unsigned long val)
+{
+	return false;
+}
+
 static struct kvm_x86_ops vmx_x86_ops __ro_after_init = {
 	.cpu_has_kvm_support = cpu_has_kvm_support,
 	.disabled_by_bios = vmx_disabled_by_bios,
@@ -14242,6 +14253,9 @@ static struct kvm_x86_ops vmx_x86_ops __ro_after_init = {
 	.pre_enter_smm = vmx_pre_enter_smm,
 	.pre_leave_smm = vmx_pre_leave_smm,
 	.enable_smi_window = enable_smi_window,
+
+	.reg_read_override = vmx_reg_read_override,
+	.reg_write_override = vmx_reg_write_override,
 };
 
 static void vmx_cleanup_l1d_flush(void)
