@@ -526,8 +526,13 @@ void __init sme_enable(struct boot_params *bp)
 
 		/* SEV state cannot be controlled by a command line option */
 		sme_me_mask = me_mask;
-		sev_enabled = true;
 		physical_mask &= ~sme_me_mask;
+		sev_enabled = true;
+
+		if (!(msr & MSR_AMD64_SEV_ES_ENABLED))
+			return;
+
+		sev_es_enabled = true;
 		return;
 	}
 
