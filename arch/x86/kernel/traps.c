@@ -61,6 +61,7 @@
 #include <asm/mpx.h>
 #include <asm/vm86.h>
 #include <asm/umip.h>
+#include <asm/mem_encrypt_vc.h>
 
 #ifdef CONFIG_X86_64
 #include <asm/x86_init.h>
@@ -882,6 +883,25 @@ do_simd_coprocessor_error(struct pt_regs *regs, long error_code)
 {
 	RCU_LOCKDEP_WARN(!rcu_is_watching(), "entry code didn't wake RCU");
 	math_error(regs, error_code, X86_TRAP_XF);
+}
+
+dotraplinkage void
+do_vmm_communication(struct pt_regs *regs, long error_code)
+{
+	int ret;
+
+	ret = sev_es_vc_exception(regs, error_code);
+	if (!ret)
+		return;
+
+	switch (ret) {
+	case X86_TRAP_GP:
+		do_general_protection(regs, 0);
+		break;
+	case X86_TRAP_UD:
+		do_invalid_op(regs, 0);
+		break;
+	}
 }
 
 dotraplinkage void
