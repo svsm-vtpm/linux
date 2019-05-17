@@ -85,9 +85,11 @@ ENTRY(startup_32)
 	addl	%ebp, %eax
 	movl	%eax, %esp
 
+#ifndef CONFIG_AMD_SEV_ES_GUEST
 	call	verify_cpu
 	testl	%eax, %eax
 	jnz	no_longmode
+#endif
 
 /*
  * Compute the delta between where we were compiled to run at
