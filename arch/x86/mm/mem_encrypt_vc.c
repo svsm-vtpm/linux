@@ -672,6 +672,9 @@ int sev_es_vc_exception(struct pt_regs *regs, long error_code)
 	flags = vmg_init(ghcb);
 
 	switch (error_code) {
+	case SVM_EXIT_EXCP_BASE + DB_VECTOR:
+		ret = vmg_exit(ghcb, SVM_VMGEXIT_NMI_COMPLETE, 0, 0);
+		break;
 	case SVM_EXIT_READ_DR7:
 		nae_exit = vmg_dr7_read;
 		break;
