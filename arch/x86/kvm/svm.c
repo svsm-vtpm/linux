@@ -5203,6 +5203,10 @@ static int handle_vmgexit(struct vcpu_svm *svm)
 					svm->vmcb->control.exit_info_2,
 				        setup_vmgexit_scratch(svm));
 		break;
+	case SVM_VMGEXIT_AP_HLT_LOOP:
+		svm->vcpu.arch.wait_for_sipi = true;
+		ret = kvm_emulate_halt(&svm->vcpu);
+		break;
 	case SVM_VMGEXIT_UNSUPPORTED_EVENT:
 		pr_err("svm: vmgexit: unsupported event - exit_info_1=%#llx, exit_info_2=%#llx\n",
 		       svm->vmcb->control.exit_info_1, svm->vmcb->control.exit_info_2);
@@ -5306,6 +5310,9 @@ static void reload_tss(struct kvm_vcpu *vcpu)
 static void pre_sev_es_run(struct vcpu_svm *svm)
 {
 	u64 ghcb_gpa;
+
+	WARN(svm->vcpu.arch.wait_for_sipi,
+	     "about to run vcpu, but still waiting for sipi\n");
 
 	if (!svm->ghcb_active)
 		return;
