@@ -81,6 +81,9 @@
 
 #define SVM_EXIT_ERR           -1
 
+/* SEV-ES software defined VMGEXIT events */
+#define SVM_VMGEXIT_UNSUPPORTED_EVENT	0x8000ffff
+
 #define SVM_EXIT_REASONS \
 	{ SVM_EXIT_READ_CR0,    "read_cr0" }, \
 	{ SVM_EXIT_READ_CR2,    "read_cr2" }, \
