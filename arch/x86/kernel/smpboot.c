@@ -82,6 +82,7 @@
 #include <asm/cpu_device_id.h>
 #include <asm/spec-ctrl.h>
 #include <asm/hw_irq.h>
+#include <asm/set_memory.h>
 
 /* representing HT siblings of each logical CPU */
 DEFINE_PER_CPU_READ_MOSTLY(cpumask_var_t, cpu_sibling_map);
@@ -794,6 +795,18 @@ wakeup_secondary_cpu_via_init(int phys_apicid, unsigned long start_eip)
 		/* Target chip */
 		/* Boot on the stack */
 		/* Kick the second */
+		if (sev_es_active()) {
+			u16 *sev_es_ap_jump_table;
+
+			/*TODO: Use ioremap_encrypted() when available */
+			sev_es_ap_jump_table = ioremap(sev_es_ap_jump_table_pa, PAGE_SIZE);
+			set_memory_encrypted((unsigned long)sev_es_ap_jump_table, 1);
+
+			sev_es_ap_jump_table[0] = (u16)(start_eip & 0x0f);
+			sev_es_ap_jump_table[1] = (u16)(start_eip >> 4);
+
+			iounmap(sev_es_ap_jump_table);
+		}
 		apic_icr_write(APIC_DM_STARTUP | (start_eip >> 12),
 			       phys_apicid);
 
