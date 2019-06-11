@@ -461,6 +461,11 @@ NEXT_PAGE(level1_fixmap_pgt)
 	.fill	512,8,0
 	.endr
 
+#ifdef CONFIG_AMD_MEM_ENCRYPT
+NEXT_PAGE(early_ghcb)
+	.fill	512,8,0
+#endif
+
 #undef PMDS
 
 	.data
