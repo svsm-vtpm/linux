@@ -16,13 +16,19 @@
 #ifndef __ASSEMBLY__
 
 #include <linux/init.h>
+#include <linux/bits.h>
 
 #include <asm/bootparam.h>
 
 #ifdef CONFIG_AMD_MEM_ENCRYPT
 
+enum sme_me_status_bits {
+	SME_ACTIVE	= BIT(0),
+	SEV_ACTIVE	= BIT(1),
+};
+
 extern u64 sme_me_mask;
-extern bool sev_enabled;
+extern enum sme_me_status_bits sme_me_status;
 
 void sme_encrypt_execute(unsigned long encrypted_kernel_vaddr,
 			 unsigned long decrypted_kernel_vaddr,
