@@ -133,6 +133,7 @@ static const u32 host_save_user_msrs[] = {
 
 struct kvm_sev_info {
 	bool active;		/* SEV enabled guest */
+	bool es_active;		/* SEV-ES enabled guest */
 	unsigned int asid;	/* ASID used for this guest */
 	unsigned int handle;	/* SEV firmware handle */
 	int fd;			/* SEV device fd */
@@ -378,6 +379,8 @@ module_param(vgif, int, 0444);
 /* enable/disable SEV support */
 static int sev = IS_ENABLED(CONFIG_AMD_MEM_ENCRYPT_ACTIVE_BY_DEFAULT);
 module_param(sev, int, 0444);
+static int sev_es = IS_ENABLED(CONFIG_AMD_MEM_ENCRYPT_ACTIVE_BY_DEFAULT);
+module_param(sev_es, int, 0444);
 
 static u8 rsm_ins_bytes[] = "\x0f\xaa";
 
@@ -446,6 +449,17 @@ static inline bool sev_guest(struct kvm *kvm)
 	struct kvm_sev_info *sev = &to_kvm_svm(kvm)->sev_info;
 
 	return sev->active;
+#else
+	return false;
+#endif
+}
+
+static inline bool sev_es_guest(struct kvm *kvm)
+{
+#ifdef CONFIG_KVM_AMD_SEV_ES
+	struct kvm_sev_info *sev = &to_kvm_svm(kvm)->sev_info;
+
+	return sev_guest(kvm) && sev->es_active;
 #else
 	return false;
 #endif
@@ -1249,6 +1263,16 @@ static __init int sev_hardware_setup(void)
 
 	pr_info("SEV supported\n");
 
+	if (sev_es) {
+		if (boot_cpu_has(X86_FEATURE_SEV_ES) &&
+		    IS_ENABLED(CONFIG_KVM_AMD_SEV_ES) &&
+		    (status->flags & SEV_STATUS_FLAGS_CONFIG_ES)) {
+			pr_info("SEV-ES supported\n");
+		} else {
+			sev_es = false;
+		}
+	}
+
 err:
 	kfree(status);
 	return rc;
@@ -1336,12 +1360,16 @@ static __init int svm_hardware_setup(void)
 	if (sev) {
 		if (boot_cpu_has(X86_FEATURE_SEV) &&
 		    IS_ENABLED(CONFIG_KVM_AMD_SEV)) {
-			r = sev_hardware_setup();
-			if (r)
+			if (sev_hardware_setup()) {
 				sev = false;
+				sev_es = false;
+			}
 		} else {
 			sev = false;
+			sev_es = false;
 		}
+	} else {
+		sev_es = false;
 	}
 
 	for_each_possible_cpu(cpu) {
