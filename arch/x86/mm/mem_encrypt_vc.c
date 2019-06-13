@@ -203,6 +203,13 @@ static long vmg_insn_rmdata(struct insn *insn, struct pt_regs *regs)
 
 		if ((base != 5) || mod)
 			effective_addr += *vmg_insn_register(regs, base);
+		else
+			/*
+			 * If ModRM.mod is 0 and SIB.base == 5, the base of the
+			 * register-indirect addressing is 0. In this case, a
+			 * 32-bit displacement follows the SIB byte.
+			 */
+			effective_addr += insn->displacement.value;
 	} else {
 		effective_addr += *vmg_insn_register(regs, rm);
 	}
