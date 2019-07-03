@@ -82,6 +82,8 @@
 #define SVM_EXIT_ERR           -1
 
 /* SEV-ES software defined VMGEXIT events */
+#define SVM_VMGEXIT_MMIO_READ		0x80000001
+#define SVM_VMGEXIT_MMIO_WRITE		0x80000002
 #define SVM_VMGEXIT_UNSUPPORTED_EVENT	0x8000ffff
 
 #define SVM_EXIT_REASONS \
