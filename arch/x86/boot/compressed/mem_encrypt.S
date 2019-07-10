@@ -26,6 +26,9 @@ ENTRY(get_sev_encryption_bit)
 	push	%ecx
 	push	%edx
 
+#ifdef CONFIG_AMD_SEV_ES_GUEST
+	movl	$47, %eax
+#else
 	/* Check if running under a hypervisor */
 	movl	$1, %eax
 	cpuid
@@ -55,6 +58,7 @@ ENTRY(get_sev_encryption_bit)
 
 	movl	%ebx, %eax
 	andl	$0x3f, %eax		/* Return the encryption bit location */
+#endif
 	jmp	.Lsev_exit
 
 .Lno_sev:
