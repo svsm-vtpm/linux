@@ -8329,6 +8329,11 @@ static void __get_regs(struct kvm_vcpu *vcpu, struct kvm_regs *regs)
 
 int kvm_arch_vcpu_ioctl_get_regs(struct kvm_vcpu *vcpu, struct kvm_regs *regs)
 {
+	if (vcpu->arch.vmsa_encrypted) {
+		printk("*** DEBUG: %s:%u - calling GET_REGS with SEV-ES guest\n", __func__, __LINE__);
+		return -EINVAL;
+	}
+
 	vcpu_load(vcpu);
 	__get_regs(vcpu, regs);
 	vcpu_put(vcpu);
@@ -8369,6 +8374,11 @@ static void __set_regs(struct kvm_vcpu *vcpu, struct kvm_regs *regs)
 
 int kvm_arch_vcpu_ioctl_set_regs(struct kvm_vcpu *vcpu, struct kvm_regs *regs)
 {
+	if (vcpu->arch.vmsa_encrypted) {
+		printk("*** DEBUG: %s:%u - calling SET_REGS with SEV-ES guest\n", __func__, __LINE__);
+		return -EINVAL;
+	}
+
 	vcpu_load(vcpu);
 	__set_regs(vcpu, regs);
 	vcpu_put(vcpu);
