@@ -6331,11 +6331,15 @@ static void kvm_vcpu_do_singlestep(struct kvm_vcpu *vcpu, int *r)
 
 int kvm_skip_emulated_instruction(struct kvm_vcpu *vcpu)
 {
-	unsigned long rflags = kvm_x86_ops->get_rflags(vcpu);
+	unsigned long rflags;
 	int r = EMULATE_DONE;
 
 	kvm_x86_ops->skip_emulated_instruction(vcpu);
 
+	if (vcpu->arch.vmsa_encrypted)
+		goto out;
+
+	rflags = kvm_x86_ops->get_rflags(vcpu);
 	/*
 	 * rflags is the old, "raw" value of the flags.  The new value has
 	 * not been saved yet.
@@ -6346,6 +6350,7 @@ int kvm_skip_emulated_instruction(struct kvm_vcpu *vcpu)
 	 */
 	if (unlikely(rflags & X86_EFLAGS_TF))
 		kvm_vcpu_do_singlestep(vcpu, &r);
+out:
 	return r == EMULATE_DONE;
 }
 EXPORT_SYMBOL_GPL(kvm_skip_emulated_instruction);
