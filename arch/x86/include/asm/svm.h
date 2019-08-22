@@ -2,6 +2,7 @@
 #ifndef __SVM_H
 #define __SVM_H
 
+#include <linux/bug.h>
 #include <uapi/asm/svm.h>
 
 
@@ -98,6 +99,42 @@ struct __attribute__ ((__packed__)) vmcb_control_area {
 	u8 reserved_7[768];
 };
 
+#define GHCB_VERSION_MAX			1ULL
+#define GHCB_VERSION_MIN			1ULL
+
+#define GHCB_USAGE_STANDARD			0
+
+#define GHCB_MSR_INFO_POS			0
+#define GHCB_MSR_INFO_MASK			((1 << 12) - 1)
+
+#define GHCB_MSR_SEV_INFO_RESP			0x001
+#define GHCB_MSR_SEV_INFO_REQ			0x002
+#define GHCB_MSR_VER_MAX_POS			48
+#define GHCB_MSR_VER_MAX_MASK			0xffff
+#define GHCB_MSR_VER_MIN_POS			32
+#define GHCB_MSR_VER_MIN_MASK			0xffff
+#define GHCB_MSR_CBIT_POS			24
+#define GHCB_MSR_CBIT_MASK			0xff
+#define GHCB_MSR_SEV_INFO(_max, _min, _cbit)	\
+	((((_max) & GHCB_MSR_VER_MAX_MASK) << GHCB_MSR_VER_MAX_POS) |	\
+	 (((_min) & GHCB_MSR_VER_MIN_MASK) << GHCB_MSR_VER_MIN_POS) |	\
+	 (((_cbit) & GHCB_MSR_CBIT_MASK) << GHCB_MSR_CBIT_POS) |	\
+	 GHCB_MSR_SEV_INFO_RESP)
+
+#define GHCB_MSR_CPUID_REQ			0x004
+#define GHCB_MSR_CPUID_RESP			0x005
+#define GHCB_MSR_CPUID_FUNC_POS			32
+#define GHCB_MSR_CPUID_FUNC_MASK		0xffffffff
+#define GHCB_MSR_CPUID_VALUE_POS		32
+#define GHCB_MSR_CPUID_VALUE_MASK		0xffffffff
+#define GHCB_MSR_CPUID_REG_POS			30
+#define GHCB_MSR_CPUID_REG_MASK			0x3
+
+#define GHCB_MSR_TERM_REQ			0x100
+#define GHCB_MSR_TERM_REASON_SET_POS		12
+#define GHCB_MSR_TERM_REASON_SET_MASK		0xf
+#define GHCB_MSR_TERM_REASON_POS		16
+#define GHCB_MSR_TERM_REASON_MASK		0xff
 
 #define TLB_CONTROL_DO_NOTHING 0
 #define TLB_CONTROL_FLUSH_ALL_ASID 1
@@ -200,11 +237,112 @@ struct __attribute__ ((__packed__)) vmcb_save_area {
 	u64 br_to;
 	u64 last_excp_from;
 	u64 last_excp_to;
+
+	/*
+	 * The following part of the save area is valid only for
+	 * SEV-ES guests when referenced through the GHCB.
+	 */
+	u8 reserved_7[104];
+	u64 reserved_8;		/* rax already available at 0x01f8 */
+	u64 rcx;
+	u64 rdx;
+	u64 rbx;
+	u64 reserved_9;		/* rsp already available at 0x01d8 */
+	u64 rbp;
+	u64 rsi;
+	u64 rdi;
+	u64 r8;
+	u64 r9;
+	u64 r10;
+	u64 r11;
+	u64 r12;
+	u64 r13;
+	u64 r14;
+	u64 r15;
+	u8 reserved_10[16];
+	u64 sw_exit_code;
+	u64 sw_exit_info_1;
+	u64 sw_exit_info_2;
+	u64 sw_scratch;
+	u8 reserved_11[56];
+	u64 xcr0;
+	u8 valid_bitmap[16];
+	u64 x87_state_gpa;
+	u8 reserved_12[1016];
 };
 
 struct __attribute__ ((__packed__)) vmcb {
 	struct vmcb_control_area control;
 	struct vmcb_save_area save;
+};
+
+struct __attribute__ ((__packed__)) ghcb {
+	struct vmcb_save_area save;
+
+	u8 shared_buffer[2032];
+
+	u8 reserved_1[10];
+	u16 protocol_version;	/* negotiated SEV-ES/GHCB protocol version */
+	u32 ghcb_usage;
+};
+
+enum vmsa_seg {
+	VMSA_SEG_ES	= 0,
+	VMSA_SEG_CS,
+	VMSA_SEG_SS,
+	VMSA_SEG_DS,
+	VMSA_SEG_FS,
+	VMSA_SEG_GS,
+	VMSA_SEG_GDTR,
+	VMSA_SEG_LDTR,
+	VMSA_SEG_IDTR,
+	VMSA_SEG_TR,
+};
+
+enum vmsa_reg {
+	VMSA_REG_CPL			= 25,
+	VMSA_REG_EFER,
+	VMSA_REG_CR4			= 41,
+	VMSA_REG_CR3,
+	VMSA_REG_CR0,
+	VMSA_REG_DR7,
+	VMSA_REG_DR6,
+	VMSA_REG_RFLAGS,
+	VMSA_REG_RIP,
+	VMSA_REG_RSP			= 59,
+	VMSA_REG_RAX			= 63,
+	VMSA_REG_STAR,
+	VMSA_REG_LSTAR,
+	VMSA_REG_CSTAR,
+	VMSA_REG_SFMASK,
+	VMSA_REG_KERNEL_GS_BASE,
+	VMSA_REG_SYSENTER_CS,
+	VMSA_REG_SYSENTER_ESP,
+	VMSA_REG_SYSENTER_EIP,
+	VMSA_REG_CR2,
+	VMSA_REG_GPAT			= 77,
+	VMSA_REG_DBGCTL,
+	VMSA_REG_BR_FROM,
+	VMSA_REG_BR_TO,
+	VMSA_REG_LAST_EXCP_FROM,
+	VMSA_REG_LAST_EXCP_TO,
+	VMSA_REG_RCX			= 97,
+	VMSA_REG_RDX,
+	VMSA_REG_RBX,
+	VMSA_REG_RBP			= 101,
+	VMSA_REG_RSI,
+	VMSA_REG_RDI,
+#ifdef CONFIG_X86_64
+	VMSA_REG_R8,
+	VMSA_REG_R9,
+	VMSA_REG_R10,
+	VMSA_REG_R11,
+	VMSA_REG_R12,
+	VMSA_REG_R13,
+	VMSA_REG_R14,
+	VMSA_REG_R15,
+#endif
+	VMSA_REG_XCR0			= 125,
 };
 
 #define SVM_CPUID_FUNC 0x8000000a
@@ -289,5 +427,29 @@ struct __attribute__ ((__packed__)) vmcb {
 #define SVM_EXITINFO_REG_MASK 0x0F
 
 #define SVM_CR0_SELECTIVE_MASK (X86_CR0_TS | X86_CR0_MP)
+
+static inline bool ghcb_reg_is_valid(struct ghcb *ghcb, enum vmsa_reg reg)
+{
+	unsigned int index = reg / 8;
+	unsigned int shift = reg % 8;
+
+	if (WARN(reg > VMSA_REG_XCR0,
+		 "%s: GHCB register number, %u, is not valid\n", __func__, reg))
+		return false;
+
+	return (ghcb->save.valid_bitmap[index] & (1 << shift));
+}
+
+static inline void ghcb_reg_set_valid(struct ghcb *ghcb, enum vmsa_reg reg)
+{
+	unsigned int index = reg / 8;
+	unsigned int shift = reg % 8;
+
+	if (WARN(reg > VMSA_REG_XCR0,
+		 "%s: GHCB register number, %u, is not valid\n", __func__, reg))
+		return;
+
+	ghcb->save.valid_bitmap[index] |= (1 << shift);
+}
 
 #endif
