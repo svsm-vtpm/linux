@@ -50,6 +50,16 @@ MODULE_PARM_DESC(psp_probe_timeout, " default timeout value, in seconds, during 
 static bool psp_dead;
 static int psp_timeout;
 
+/* Trusted Memory Region (TMR):
+ *   The TMR is a 1MB area that must be 1MB aligned.  To accomplish this
+ *   allocate an amount that is the size of area and the required alignment.
+ *   The aligned address will be calculated from the returned address.
+ */
+#define SEV_ES_TMR_ALIGN	(1024 * 1024)
+#define SEV_ES_TMR_SIZE		(1024 * 1024)
+#define SEV_ES_TMR_LEN		(SEV_ES_TMR_ALIGN + SEV_ES_TMR_SIZE)
+static void *sev_es_tmr;
+
 static struct psp_device *psp_alloc_struct(struct sp_device *sp)
 {
 	struct device *dev = sp->dev;
@@ -228,6 +238,20 @@ static int __sev_platform_init_locked(int *error)
 	if (psp->sev_state == SEV_STATE_INIT)
 		return 0;
 
+	if (sev_es_tmr) {
+		u64 tmr_pa;
+
+		/*
+		 * Do not include the encryption mask on the physical
+		 * address of the TMR (firmware should clear it anyway).
+		 */
+		tmr_pa = __pa(sev_es_tmr);
+		tmr_pa = ALIGN(tmr_pa, SEV_ES_TMR_ALIGN);
+
+		psp->init_cmd_buf.flags |= SEV_INIT_FLAGS_SEV_ES;
+		psp->init_cmd_buf.tmr_address = tmr_pa;
+		psp->init_cmd_buf.tmr_len = SEV_ES_TMR_SIZE;
+	}
 	rc = __sev_do_cmd_locked(SEV_CMD_INIT, &psp->init_cmd_buf, error);
 	if (rc)
 		return rc;
@@ -993,6 +1017,13 @@ void psp_pci_init(void)
 	    sev_update_firmware(psp_master->dev) == 0)
 		sev_get_api_version();
 
+	/* Obtain the TMR memory area for SEV-ES use */
+	if (boot_cpu_has(X86_FEATURE_SEV_ES)) {
+		sev_es_tmr = kzalloc(SEV_ES_TMR_LEN, GFP_KERNEL);
+		if (!sev_es_tmr)
+			goto out;
+	}
+
 	/* Initialize the platform */
 	rc = sev_platform_init(&error);
 	if (rc) {
@@ -1006,6 +1037,9 @@ void psp_pci_init(void)
 	return;
 
 err:
+	kfree(sev_es_tmr);
+
+out:
 	psp_master = NULL;
 }
 
@@ -1015,4 +1049,9 @@ void psp_pci_exit(void)
 		return;
 
 	sev_platform_shutdown(NULL);
+
+	if (sev_es_tmr) {
+		wbinvd_on_all_cpus();
+		kfree(sev_es_tmr);
+	}
 }
