@@ -8,6 +8,9 @@ struct mpc_bus;
 struct mpc_cpu;
 struct mpc_table;
 struct cpuinfo_x86;
+struct ghcb;
+struct insn;
+struct pt_regs;
 
 /**
  * struct x86_init_mpparse - platform specific mpparse ops
@@ -238,6 +241,8 @@ struct x86_legacy_features {
  */
 struct x86_hyper_runtime {
 	void (*pin_vcpu)(int cpu);
+	int (*sev_es_hypercall)(struct ghcb *ghcb, unsigned long ghcb_pa,
+				struct pt_regs *regs, struct insn *insn);
 };
 
 /**
