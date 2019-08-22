@@ -52,6 +52,7 @@
 #include <asm/irq_remapping.h>
 #include <asm/spec-ctrl.h>
 #include <asm/traps.h>
+#include <asm/fpu/internal.h>
 
 #include <asm/virtext.h>
 #include "trace.h"
@@ -800,7 +801,7 @@ static int svm_hardware_enable(void)
 
 	wrmsrl(MSR_EFER, efer | EFER_SVME);
 
-	wrmsrl(MSR_VM_HSAVE_PA, page_to_pfn(sd->save_area) << PAGE_SHIFT);
+	wrmsrl(MSR_VM_HSAVE_PA, __sme_page_pa(sd->save_area));
 
 	if (static_cpu_has(X86_FEATURE_TSCRATEMSR)) {
 		wrmsrl(MSR_AMD64_TSC_RATIO, TSC_RATIO_DEFAULT);
@@ -870,6 +871,7 @@ static int svm_cpu_init(int cpu)
 	sd->save_area = alloc_page(GFP_KERNEL);
 	if (!sd->save_area)
 		goto err_1;
+	clear_page(page_address(sd->save_area));
 
 	if (svm_sev_enabled()) {
 		r = -ENOMEM;
@@ -1519,17 +1521,40 @@ static void init_vmcb(struct vcpu_svm *svm)
 	init_sys_seg(&save->ldtr, SEG_TYPE_LDT);
 	init_sys_seg(&save->tr, SEG_TYPE_BUSY_TSS16);
 
-	svm_set_efer(&svm->vcpu, 0);
+	/*TODO: can we just call svm_set_efer()? */
+	if (sev_es_guest(svm->vcpu.kvm)) {
+		svm->vcpu.arch.efer = EFER_SVME;
+		save->efer = EFER_SVME;
+	} else {
+		svm_set_efer(&svm->vcpu, 0);
+	}
+
 	save->dr6 = 0xffff0ff0;
-	kvm_set_rflags(&svm->vcpu, 2);
+
+	/*TODO: can we just call kvm_set_rflags()? */
+	if (sev_es_guest(svm->vcpu.kvm)) {
+		save->rflags = 2;
+	} else {
+		kvm_set_rflags(&svm->vcpu, 2);
+	}
+
 	save->rip = 0x0000fff0;
 	svm->vcpu.arch.regs[VCPU_REGS_RIP] = save->rip;
 
+	/*TODO: can we just svm_set_cr0()? */
 	/*
 	 * svm_set_cr0() sets PG and WP and clears NW and CD on save->cr0.
 	 * It also updates the guest-visible cr0 value.
 	 */
-	svm_set_cr0(&svm->vcpu, X86_CR0_NW | X86_CR0_CD | X86_CR0_ET);
+	if (sev_es_guest(svm->vcpu.kvm)) {
+		save->cr0 = X86_CR0_NW | X86_CR0_CD | X86_CR0_ET;
+		svm->vcpu.arch.cr0 = save->cr0;
+		if (kvm_check_has_quirk(svm->vcpu.kvm, KVM_X86_QUIRK_CD_NW_CLEARED))
+			save->cr0 &= ~(X86_CR0_CD | X86_CR0_NW);
+	} else {
+		svm_set_cr0(&svm->vcpu, X86_CR0_NW | X86_CR0_CD | X86_CR0_ET);
+	}
+
 	kvm_mmu_reset_context(&svm->vcpu);
 
 	save->cr4 = X86_CR4_PAE;
@@ -1583,8 +1608,10 @@ static void init_vmcb(struct vcpu_svm *svm)
 		svm->vmcb->control.nested_ctl |= SVM_NESTED_CTL_SEV_ENABLE;
 		clr_exception_intercept(svm, UD_VECTOR);
 
-		if (sev_es_guest(svm->vcpu.kvm))
+		if (sev_es_guest(svm->vcpu.kvm)) {
+			save->xcr0 = 7;
 			sev_es_init_vmcb(svm);
+		}
 	}
 
 	mark_all_dirty(svm->vmcb);
@@ -2156,6 +2183,7 @@ static struct kvm_vcpu *svm_create_vcpu(struct kvm *kvm, unsigned int id)
 	}
 
 	svm->asid_generation = 0;
+
 	init_vmcb(svm);
 
 	svm_init_osvw(&svm->vcpu);
@@ -2228,6 +2256,18 @@ static void svm_vcpu_load(struct kvm_vcpu *vcpu, int cpu)
 	if (unlikely(cpu != vcpu->cpu)) {
 		svm->asid_generation = 0;
 		mark_all_dirty(svm->vmcb);
+
+		if (sev_es_guest(svm->vcpu.kvm)) {
+			struct vmcb_save_area *hostsa;
+
+			asm volatile("vmsave"
+				:
+				: "a" (__sme_page_pa(sd->save_area))
+				: "memory");
+
+			hostsa = (struct vmcb_save_area *)(page_address(sd->save_area) + 0x400);
+			hostsa->xcr0 = xgetbv(0);
+		}
 	}
 
 #ifdef CONFIG_X86_64
@@ -5796,9 +5836,11 @@ static void svm_vcpu_run(struct kvm_vcpu *vcpu)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
 
-	vmsa_reg_write(svm, VMSA_REG_RAX, vcpu->arch.regs[VCPU_REGS_RAX]);
-	vmsa_reg_write(svm, VMSA_REG_RSP, vcpu->arch.regs[VCPU_REGS_RSP]);
-	vmsa_reg_write(svm, VMSA_REG_RIP, vcpu->arch.regs[VCPU_REGS_RIP]);
+	if (!sev_es_guest(svm->vcpu.kvm)) {
+		vmsa_reg_write(svm, VMSA_REG_RAX, vcpu->arch.regs[VCPU_REGS_RAX]);
+		vmsa_reg_write(svm, VMSA_REG_RSP, vcpu->arch.regs[VCPU_REGS_RSP]);
+		vmsa_reg_write(svm, VMSA_REG_RIP, vcpu->arch.regs[VCPU_REGS_RIP]);
+	}
 
 	/*
 	 * A vmexit emulation is required before the vcpu can be executed
@@ -5827,7 +5869,8 @@ static void svm_vcpu_run(struct kvm_vcpu *vcpu)
 
 	sync_lapic_to_cr8(vcpu);
 
-	vmsa_reg_write(svm, VMSA_REG_CR2, vcpu->arch.cr2);
+	if (!sev_es_guest(svm->vcpu.kvm))
+		vmsa_reg_write(svm, VMSA_REG_CR2, vcpu->arch.cr2);
 
 	clgi();
 	kvm_load_guest_xcr0(vcpu);
@@ -5842,107 +5885,133 @@ static void svm_vcpu_run(struct kvm_vcpu *vcpu)
 
 	local_irq_enable();
 
-	asm volatile (
-		"push %%" _ASM_BP "; \n\t"
-		"mov %c[rbx](%[svm]), %%" _ASM_BX " \n\t"
-		"mov %c[rcx](%[svm]), %%" _ASM_CX " \n\t"
-		"mov %c[rdx](%[svm]), %%" _ASM_DX " \n\t"
-		"mov %c[rsi](%[svm]), %%" _ASM_SI " \n\t"
-		"mov %c[rdi](%[svm]), %%" _ASM_DI " \n\t"
-		"mov %c[rbp](%[svm]), %%" _ASM_BP " \n\t"
-#ifdef CONFIG_X86_64
-		"mov %c[r8](%[svm]),  %%r8  \n\t"
-		"mov %c[r9](%[svm]),  %%r9  \n\t"
-		"mov %c[r10](%[svm]), %%r10 \n\t"
-		"mov %c[r11](%[svm]), %%r11 \n\t"
-		"mov %c[r12](%[svm]), %%r12 \n\t"
-		"mov %c[r13](%[svm]), %%r13 \n\t"
-		"mov %c[r14](%[svm]), %%r14 \n\t"
-		"mov %c[r15](%[svm]), %%r15 \n\t"
-#endif
+	if (sev_es_guest(svm->vcpu.kvm)) {
+		asm volatile (
+			"push %%" _ASM_BP "; \n\t"
 
-		/* Enter guest mode */
-		"push %%" _ASM_AX " \n\t"
-		"mov %c[vmcb](%[svm]), %%" _ASM_AX " \n\t"
-		__ex("vmload %%" _ASM_AX) "\n\t"
-		__ex("vmrun %%" _ASM_AX) "\n\t"
-		__ex("vmsave %%" _ASM_AX) "\n\t"
-		"pop %%" _ASM_AX " \n\t"
+			/* Enter guest mode */
+			"push %%" _ASM_AX " \n\t"
+			"mov %c[vmcb](%[svm]), %%" _ASM_AX " \n\t"
+			__ex("vmrun %%" _ASM_AX) "\n\t"
+			"pop %%" _ASM_AX " \n\t"
 
-		/* Save guest registers, load host registers */
-		"mov %%" _ASM_BX ", %c[rbx](%[svm]) \n\t"
-		"mov %%" _ASM_CX ", %c[rcx](%[svm]) \n\t"
-		"mov %%" _ASM_DX ", %c[rdx](%[svm]) \n\t"
-		"mov %%" _ASM_SI ", %c[rsi](%[svm]) \n\t"
-		"mov %%" _ASM_DI ", %c[rdi](%[svm]) \n\t"
-		"mov %%" _ASM_BP ", %c[rbp](%[svm]) \n\t"
+			"pop %%" _ASM_BP
+			:
+			: [svm]"a"(svm),
+			  [vmcb]"i"(offsetof(struct vcpu_svm, vmcb_pa))
+			: "cc", "memory"
 #ifdef CONFIG_X86_64
-		"mov %%r8,  %c[r8](%[svm]) \n\t"
-		"mov %%r9,  %c[r9](%[svm]) \n\t"
-		"mov %%r10, %c[r10](%[svm]) \n\t"
-		"mov %%r11, %c[r11](%[svm]) \n\t"
-		"mov %%r12, %c[r12](%[svm]) \n\t"
-		"mov %%r13, %c[r13](%[svm]) \n\t"
-		"mov %%r14, %c[r14](%[svm]) \n\t"
-		"mov %%r15, %c[r15](%[svm]) \n\t"
-		/*
-		* Clear host registers marked as clobbered to prevent
-		* speculative use.
-		*/
-		"xor %%r8d, %%r8d \n\t"
-		"xor %%r9d, %%r9d \n\t"
-		"xor %%r10d, %%r10d \n\t"
-		"xor %%r11d, %%r11d \n\t"
-		"xor %%r12d, %%r12d \n\t"
-		"xor %%r13d, %%r13d \n\t"
-		"xor %%r14d, %%r14d \n\t"
-		"xor %%r15d, %%r15d \n\t"
-#endif
-		"xor %%ebx, %%ebx \n\t"
-		"xor %%ecx, %%ecx \n\t"
-		"xor %%edx, %%edx \n\t"
-		"xor %%esi, %%esi \n\t"
-		"xor %%edi, %%edi \n\t"
-		"pop %%" _ASM_BP
-		:
-		: [svm]"a"(svm),
-		  [vmcb]"i"(offsetof(struct vcpu_svm, vmcb_pa)),
-		  [rbx]"i"(offsetof(struct vcpu_svm, vcpu.arch.regs[VCPU_REGS_RBX])),
-		  [rcx]"i"(offsetof(struct vcpu_svm, vcpu.arch.regs[VCPU_REGS_RCX])),
-		  [rdx]"i"(offsetof(struct vcpu_svm, vcpu.arch.regs[VCPU_REGS_RDX])),
-		  [rsi]"i"(offsetof(struct vcpu_svm, vcpu.arch.regs[VCPU_REGS_RSI])),
-		  [rdi]"i"(offsetof(struct vcpu_svm, vcpu.arch.regs[VCPU_REGS_RDI])),
-		  [rbp]"i"(offsetof(struct vcpu_svm, vcpu.arch.regs[VCPU_REGS_RBP]))
-#ifdef CONFIG_X86_64
-		  , [r8]"i"(offsetof(struct vcpu_svm, vcpu.arch.regs[VCPU_REGS_R8])),
-		  [r9]"i"(offsetof(struct vcpu_svm, vcpu.arch.regs[VCPU_REGS_R9])),
-		  [r10]"i"(offsetof(struct vcpu_svm, vcpu.arch.regs[VCPU_REGS_R10])),
-		  [r11]"i"(offsetof(struct vcpu_svm, vcpu.arch.regs[VCPU_REGS_R11])),
-		  [r12]"i"(offsetof(struct vcpu_svm, vcpu.arch.regs[VCPU_REGS_R12])),
-		  [r13]"i"(offsetof(struct vcpu_svm, vcpu.arch.regs[VCPU_REGS_R13])),
-		  [r14]"i"(offsetof(struct vcpu_svm, vcpu.arch.regs[VCPU_REGS_R14])),
-		  [r15]"i"(offsetof(struct vcpu_svm, vcpu.arch.regs[VCPU_REGS_R15]))
-#endif
-		: "cc", "memory"
-#ifdef CONFIG_X86_64
-		, "rbx", "rcx", "rdx", "rsi", "rdi"
-		, "r8", "r9", "r10", "r11" , "r12", "r13", "r14", "r15"
+			, "rbx", "rcx", "rdx", "rsi", "rdi"
+			, "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"
 #else
-		, "ebx", "ecx", "edx", "esi", "edi"
+			, "ebx", "ecx", "edx", "esi", "edi"
 #endif
-		);
+			);
+	} else {
+		asm volatile (
+			"push %%" _ASM_BP "; \n\t"
+			"mov %c[rbx](%[svm]), %%" _ASM_BX " \n\t"
+			"mov %c[rcx](%[svm]), %%" _ASM_CX " \n\t"
+			"mov %c[rdx](%[svm]), %%" _ASM_DX " \n\t"
+			"mov %c[rsi](%[svm]), %%" _ASM_SI " \n\t"
+			"mov %c[rdi](%[svm]), %%" _ASM_DI " \n\t"
+			"mov %c[rbp](%[svm]), %%" _ASM_BP " \n\t"
+#ifdef CONFIG_X86_64
+			"mov %c[r8](%[svm]),  %%r8  \n\t"
+			"mov %c[r9](%[svm]),  %%r9  \n\t"
+			"mov %c[r10](%[svm]), %%r10 \n\t"
+			"mov %c[r11](%[svm]), %%r11 \n\t"
+			"mov %c[r12](%[svm]), %%r12 \n\t"
+			"mov %c[r13](%[svm]), %%r13 \n\t"
+			"mov %c[r14](%[svm]), %%r14 \n\t"
+			"mov %c[r15](%[svm]), %%r15 \n\t"
+#endif
+
+			/* Enter guest mode */
+			"push %%" _ASM_AX " \n\t"
+			"mov %c[vmcb](%[svm]), %%" _ASM_AX " \n\t"
+			__ex("vmload %%" _ASM_AX) "\n\t"
+			__ex("vmrun %%" _ASM_AX) "\n\t"
+			__ex("vmsave %%" _ASM_AX) "\n\t"
+			"pop %%" _ASM_AX " \n\t"
+
+			/* Save guest registers, load host registers */
+			"mov %%" _ASM_BX ", %c[rbx](%[svm]) \n\t"
+			"mov %%" _ASM_CX ", %c[rcx](%[svm]) \n\t"
+			"mov %%" _ASM_DX ", %c[rdx](%[svm]) \n\t"
+			"mov %%" _ASM_SI ", %c[rsi](%[svm]) \n\t"
+			"mov %%" _ASM_DI ", %c[rdi](%[svm]) \n\t"
+			"mov %%" _ASM_BP ", %c[rbp](%[svm]) \n\t"
+#ifdef CONFIG_X86_64
+			"mov %%r8,  %c[r8](%[svm]) \n\t"
+			"mov %%r9,  %c[r9](%[svm]) \n\t"
+			"mov %%r10, %c[r10](%[svm]) \n\t"
+			"mov %%r11, %c[r11](%[svm]) \n\t"
+			"mov %%r12, %c[r12](%[svm]) \n\t"
+			"mov %%r13, %c[r13](%[svm]) \n\t"
+			"mov %%r14, %c[r14](%[svm]) \n\t"
+			"mov %%r15, %c[r15](%[svm]) \n\t"
+			/*
+			* Clear host registers marked as clobbered to prevent
+			* speculative use.
+			*/
+			"xor %%r8d, %%r8d \n\t"
+			"xor %%r9d, %%r9d \n\t"
+			"xor %%r10d, %%r10d \n\t"
+			"xor %%r11d, %%r11d \n\t"
+			"xor %%r12d, %%r12d \n\t"
+			"xor %%r13d, %%r13d \n\t"
+			"xor %%r14d, %%r14d \n\t"
+			"xor %%r15d, %%r15d \n\t"
+#endif
+			"xor %%ebx, %%ebx \n\t"
+			"xor %%ecx, %%ecx \n\t"
+			"xor %%edx, %%edx \n\t"
+			"xor %%esi, %%esi \n\t"
+			"xor %%edi, %%edi \n\t"
+			"pop %%" _ASM_BP
+			:
+			: [svm]"a"(svm),
+			  [vmcb]"i"(offsetof(struct vcpu_svm, vmcb_pa)),
+			  [rbx]"i"(offsetof(struct vcpu_svm, vcpu.arch.regs[VCPU_REGS_RBX])),
+			  [rcx]"i"(offsetof(struct vcpu_svm, vcpu.arch.regs[VCPU_REGS_RCX])),
+			  [rdx]"i"(offsetof(struct vcpu_svm, vcpu.arch.regs[VCPU_REGS_RDX])),
+			  [rsi]"i"(offsetof(struct vcpu_svm, vcpu.arch.regs[VCPU_REGS_RSI])),
+			  [rdi]"i"(offsetof(struct vcpu_svm, vcpu.arch.regs[VCPU_REGS_RDI])),
+			  [rbp]"i"(offsetof(struct vcpu_svm, vcpu.arch.regs[VCPU_REGS_RBP]))
+#ifdef CONFIG_X86_64
+			  , [r8]"i"(offsetof(struct vcpu_svm, vcpu.arch.regs[VCPU_REGS_R8])),
+			  [r9]"i"(offsetof(struct vcpu_svm, vcpu.arch.regs[VCPU_REGS_R9])),
+			  [r10]"i"(offsetof(struct vcpu_svm, vcpu.arch.regs[VCPU_REGS_R10])),
+			  [r11]"i"(offsetof(struct vcpu_svm, vcpu.arch.regs[VCPU_REGS_R11])),
+			  [r12]"i"(offsetof(struct vcpu_svm, vcpu.arch.regs[VCPU_REGS_R12])),
+			  [r13]"i"(offsetof(struct vcpu_svm, vcpu.arch.regs[VCPU_REGS_R13])),
+			  [r14]"i"(offsetof(struct vcpu_svm, vcpu.arch.regs[VCPU_REGS_R14])),
+			  [r15]"i"(offsetof(struct vcpu_svm, vcpu.arch.regs[VCPU_REGS_R15]))
+#endif
+			: "cc", "memory"
+#ifdef CONFIG_X86_64
+			, "rbx", "rcx", "rdx", "rsi", "rdi"
+			, "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"
+#else
+			, "ebx", "ecx", "edx", "esi", "edi"
+#endif
+			);
+	}
 
 	/* Eliminate branch target predictions from guest mode */
 	vmexit_fill_RSB();
 
+	if (!sev_es_guest(svm->vcpu.kvm)) {
 #ifdef CONFIG_X86_64
-	wrmsrl(MSR_GS_BASE, svm->host.gs_base);
+		wrmsrl(MSR_GS_BASE, svm->host.gs_base);
 #else
-	loadsegment(fs, svm->host.fs);
+		loadsegment(fs, svm->host.fs);
 #ifndef CONFIG_X86_32_LAZY_GS
-	loadsegment(gs, svm->host.gs);
+		loadsegment(gs, svm->host.gs);
 #endif
 #endif
+	}
 
 	/*
 	 * We do not use IBRS in the kernel. If this vCPU has used the
@@ -5962,16 +6031,19 @@ static void svm_vcpu_run(struct kvm_vcpu *vcpu)
 	if (unlikely(!msr_write_intercepted(vcpu, MSR_IA32_SPEC_CTRL)))
 		svm->spec_ctrl = native_read_msr(MSR_IA32_SPEC_CTRL);
 
-	reload_tss(vcpu);
+	if (!sev_es_guest(svm->vcpu.kvm))
+		reload_tss(vcpu);
 
 	local_irq_disable();
 
 	x86_spec_ctrl_restore_host(svm->spec_ctrl, svm->virt_spec_ctrl);
 
-	vcpu->arch.cr2 = vmsa_reg_read(svm, VMSA_REG_CR2);
-	vcpu->arch.regs[VCPU_REGS_RAX] = vmsa_reg_read(svm, VMSA_REG_RAX);
-	vcpu->arch.regs[VCPU_REGS_RSP] = vmsa_reg_read(svm, VMSA_REG_RSP);
-	vcpu->arch.regs[VCPU_REGS_RIP] = vmsa_reg_read(svm, VMSA_REG_RIP);
+	if (!sev_es_guest(svm->vcpu.kvm)) {
+		vcpu->arch.cr2 = vmsa_reg_read(svm, VMSA_REG_CR2);
+		vcpu->arch.regs[VCPU_REGS_RAX] = vmsa_reg_read(svm, VMSA_REG_RAX);
+		vcpu->arch.regs[VCPU_REGS_RSP] = vmsa_reg_read(svm, VMSA_REG_RSP);
+		vcpu->arch.regs[VCPU_REGS_RIP] = vmsa_reg_read(svm, VMSA_REG_RIP);
+	}
 
 	if (unlikely(svm->vmcb->control.exit_code == SVM_EXIT_NMI))
 		kvm_before_interrupt(&svm->vcpu);
@@ -6015,7 +6087,8 @@ static void svm_set_cr3(struct kvm_vcpu *vcpu, unsigned long root)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
 
-	vmsa_reg_write(svm, VMSA_REG_CR3, __sme_set(root));
+	if (!sev_es_guest(vcpu->kvm))
+		vmsa_reg_write(svm, VMSA_REG_CR3, __sme_set(root));
 	mark_dirty(svm->vmcb, VMCB_CR);
 }
 
@@ -6027,7 +6100,8 @@ static void set_tdp_cr3(struct kvm_vcpu *vcpu, unsigned long root)
 	mark_dirty(svm->vmcb, VMCB_NPT);
 
 	/* Also sync guest cr3 here in case we live migrate */
-	vmsa_reg_write(svm, VMSA_REG_CR3, kvm_read_cr3(vcpu));
+	if (!sev_es_guest(vcpu->kvm))
+		vmsa_reg_write(svm, VMSA_REG_CR3, kvm_read_cr3(vcpu));
 	mark_dirty(svm->vmcb, VMCB_CR);
 }
 
@@ -6459,15 +6533,18 @@ static int enable_smi_window(struct kvm_vcpu *vcpu)
 	return 0;
 }
 
-static int sev_asid_new(void)
+static int sev_asid_new(struct kvm_sev_info *sev)
 {
-	int pos;
+	int pos, min_asid, max_asid;
 
 	/*
-	 * SEV-enabled guest must use asid from min_sev_asid to max_sev_asid.
+	 * SEV-enabled guests must use asid from min_sev_asid to max_sev_asid.
+	 * SEV-ES-enabled guest can use from 1 to min_sev_asid - 1.
 	 */
-	pos = find_next_zero_bit(sev_asid_bitmap, max_sev_asid, min_sev_asid - 1);
-	if (pos >= max_sev_asid)
+	min_asid = sev->es_active ? 0 : min_sev_asid - 1;
+	max_asid = sev->es_active ? min_sev_asid - 1 : max_sev_asid;
+	pos = find_next_zero_bit(sev_asid_bitmap, max_sev_asid, min_asid);
+	if (pos >= max_asid)
 		return -EBUSY;
 
 	set_bit(pos, sev_asid_bitmap);
@@ -6483,7 +6560,7 @@ static int sev_guest_init(struct kvm *kvm, struct kvm_sev_cmd *argp)
 	if (unlikely(sev->active))
 		return ret;
 
-	asid = sev_asid_new();
+	asid = sev_asid_new(sev);
 	if (asid < 0)
 		return ret;
 
@@ -6500,6 +6577,13 @@ static int sev_guest_init(struct kvm *kvm, struct kvm_sev_cmd *argp)
 e_free:
 	__sev_asid_free(asid);
 	return ret;
+}
+
+static int sev_es_guest_init(struct kvm *kvm, struct kvm_sev_cmd *argp)
+{
+	to_kvm_svm(kvm)->sev_info.es_active = true;
+
+	return sev_guest_init(kvm, argp);
 }
 
 static int sev_bind_asid(struct kvm *kvm, unsigned int handle, int *error)
@@ -6719,6 +6803,46 @@ e_unpin:
 	sev_unpin_memory(kvm, inpages, npages);
 e_free:
 	kfree(data);
+	return ret;
+}
+
+static int sev_launch_update_vmsa(struct kvm *kvm, struct kvm_sev_cmd *argp)
+{
+	struct kvm_sev_info *sev = &to_kvm_svm(kvm)->sev_info;
+	struct sev_data_launch_update_vmsa *vmsa;
+	int i, ret;
+
+	if (!sev_es_guest(kvm))
+		return -ENOTTY;
+
+	vmsa = kzalloc(sizeof(*vmsa), GFP_KERNEL);
+	if (!vmsa)
+		return -ENOMEM;
+
+	for (i = 0; i < kvm->created_vcpus; i++) {
+		struct vcpu_svm *svm = to_svm(kvm->vcpus[i]);
+
+		/*
+		 * The LAUNCH_UPDATE_VMSA command will perform in-place
+		 * encryption of the VMSA memory content (i.e it will write
+		 * the same memory region with the guest's key), so invalidate
+		 * it first.
+		 */
+		clflush_cache_range(svm->vmsa, PAGE_SIZE);
+
+		vmsa->handle = sev->handle;
+		vmsa->address = __sme_pa(svm->vmsa);
+		vmsa->len = PAGE_SIZE;
+		ret = sev_issue_cmd(kvm, SEV_CMD_LAUNCH_UPDATE_VMSA, vmsa,
+				    &argp->error);
+		if (ret)
+			goto e_free;
+
+		svm->vcpu.arch.vmsa_encrypted = true;
+	}
+
+e_free:
+	kfree(vmsa);
 	return ret;
 }
 
@@ -7166,11 +7290,17 @@ static int svm_mem_enc_op(struct kvm *kvm, void __user *argp)
 	case KVM_SEV_INIT:
 		r = sev_guest_init(kvm, &sev_cmd);
 		break;
+	case KVM_SEV_ES_INIT:
+		r = sev_es_guest_init(kvm, &sev_cmd);
+		break;
 	case KVM_SEV_LAUNCH_START:
 		r = sev_launch_start(kvm, &sev_cmd);
 		break;
 	case KVM_SEV_LAUNCH_UPDATE_DATA:
 		r = sev_launch_update_data(kvm, &sev_cmd);
+		break;
+	case KVM_SEV_LAUNCH_UPDATE_VMSA:
+		r = sev_launch_update_vmsa(kvm, &sev_cmd);
 		break;
 	case KVM_SEV_LAUNCH_MEASURE:
 		r = sev_launch_measure(kvm, &sev_cmd);
