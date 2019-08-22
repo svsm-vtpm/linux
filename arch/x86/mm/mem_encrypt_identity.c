@@ -529,6 +529,11 @@ void __init sme_enable(struct boot_params *bp)
 		sme_me_mask = me_mask;
 		sme_me_status |= SEV_ACTIVE;
 		physical_mask &= ~sme_me_mask;
+
+		if (!(msr & MSR_AMD64_SEV_ES_ENABLED))
+			return;
+
+		sme_me_status |= SEV_ES_ACTIVE;
 		return;
 	}
 
