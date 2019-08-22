@@ -75,8 +75,10 @@ startup_64:
 	/* Set up the stack for verify_cpu(), similar to initial_stack below */
 	leaq	(__end_init_task - SIZEOF_PTREGS)(%rip), %rsp
 
+#ifndef CONFIG_AMD_SEV_ES_GUEST
 	/* Sanitize CPU configuration */
 	call verify_cpu
+#endif
 
 	/*
 	 * Perform pagetable fixups. Additionally, if SME is active, encrypt
@@ -108,8 +110,10 @@ ENTRY(secondary_startup_64)
 	 * after the boot processor executes this code.
 	 */
 
+#ifndef CONFIG_AMD_SEV_ES_GUEST
 	/* Sanitize CPU configuration */
 	call verify_cpu
+#endif
 
 	/*
 	 * Retrieve the modifier (SME encryption mask if SME is active) to be
@@ -144,10 +148,14 @@ ENTRY(secondary_startup_64)
 1:
 	UNWIND_HINT_EMPTY
 
+#ifdef CONFIG_AMD_SEV_ES_GUEST
+	bts	$20, %edi
+#else
 	/* Check if nx is implemented */
 	movl	$0x80000001, %eax
 	cpuid
 	movl	%edx,%edi
+#endif
 
 	/* Setup EFER (Extended Feature Enable Register) */
 	movl	$MSR_EFER, %ecx
