@@ -2065,6 +2065,9 @@ static void svm_vcpu_reset(struct kvm_vcpu *vcpu, bool init_event)
 	u32 dummy;
 	u32 eax = 1;
 
+	if (vcpu->arch.vmsa_encrypted)
+		return;
+
 	vcpu->arch.microcode_version = 0x01000065;
 	svm->spec_ctrl = 0;
 	svm->virt_spec_ctrl = 0;
