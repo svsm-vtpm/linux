@@ -29,6 +29,7 @@ enum sme_me_status_bits {
 };
 
 extern u64 sme_me_mask;
+extern u64 sev_es_ap_jump_table_pa;
 extern enum sme_me_status_bits sme_me_status;
 
 void sme_encrypt_execute(unsigned long encrypted_kernel_vaddr,
@@ -65,7 +66,8 @@ bool sev_es_active(void);
 
 #else	/* !CONFIG_AMD_MEM_ENCRYPT */
 
-#define sme_me_mask	0ULL
+#define sme_me_mask		0ULL
+#define sev_es_ap_jump_table_pa	0ULL
 
 static inline void __init sme_early_encrypt(resource_size_t paddr,
 					    unsigned long size) { }
