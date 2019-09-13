@@ -46,6 +46,8 @@
 #include <asm/apicdef.h>
 #include <asm/hypervisor.h>
 #include <asm/tlb.h>
+#include <asm/svm.h>
+#include <asm/mem_encrypt_vc.h>
 
 static int kvmapf = 1;
 
@@ -723,13 +725,48 @@ static void __init kvm_init_platform(void)
 	x86_platform.apic_post_init = kvm_apic_init;
 }
 
+static int kvm_sev_es_hypercall(struct ghcb *ghcb, unsigned long ghcb_pa,
+				struct pt_regs *regs, struct insn *insn)
+{
+	int ret = -EINVAL;
+
+#ifdef CONFIG_AMD_MEM_ENCRYPT
+	ghcb->save.rax = regs->ax;
+	ghcb_reg_set_valid(ghcb, VMSA_REG_RAX);
+	ghcb->save.rbx = regs->bx;
+	ghcb_reg_set_valid(ghcb, VMSA_REG_RBX);
+	ghcb->save.rcx = regs->cx;
+	ghcb_reg_set_valid(ghcb, VMSA_REG_RCX);
+	ghcb->save.rdx = regs->dx;
+	ghcb_reg_set_valid(ghcb, VMSA_REG_RDX);
+	ghcb->save.rsi = regs->si;
+	ghcb_reg_set_valid(ghcb, VMSA_REG_RSI);
+	ghcb->save.cpl = (u8)(regs->cs & 0x3);
+	ghcb_reg_set_valid(ghcb, VMSA_REG_CPL);
+
+	ret = vmg_exit(ghcb, SVM_EXIT_VMMCALL, 0, 0);
+	if (ret)
+		return ret;
+
+	if (!ghcb_reg_is_valid(ghcb, VMSA_REG_RAX)) {
+		vmg_exit(ghcb, SVM_VMGEXIT_UNSUPPORTED_EVENT,
+			 SVM_EXIT_VMMCALL, 0);
+		return -EINVAL;
+	}
+	regs->ax = ghcb->save.rax;
+#endif
+
+	return ret;
+}
+
 const __initconst struct hypervisor_x86 x86_hyper_kvm = {
-	.name			= "KVM",
-	.detect			= kvm_detect,
-	.type			= X86_HYPER_KVM,
-	.init.guest_late_init	= kvm_guest_init,
-	.init.x2apic_available	= kvm_para_available,
-	.init.init_platform	= kvm_init_platform,
+	.name			  = "KVM",
+	.detect			  = kvm_detect,
+	.type			  = X86_HYPER_KVM,
+	.init.guest_late_init	  = kvm_guest_init,
+	.init.x2apic_available	  = kvm_para_available,
+	.init.init_platform	  = kvm_init_platform,
+	.runtime.sev_es_hypercall = kvm_sev_es_hypercall,
 };
 
 static __init int activate_jump_labels(void)
