@@ -347,6 +347,12 @@ bool sev_active(void)
 }
 EXPORT_SYMBOL(sev_active);
 
+bool sev_es_active(void)
+{
+	return sme_me_status & SEV_ES_ACTIVE;
+}
+EXPORT_SYMBOL(sev_es_active);
+
 /* Architecture __weak replacement functions */
 void __init mem_encrypt_free_decrypted_mem(void)
 {
@@ -374,6 +380,8 @@ void __init mem_encrypt_free_decrypted_mem(void)
 
 void __init mem_encrypt_init(void)
 {
+	char *msg;
+
 	if (!sme_me_mask)
 		return;
 
@@ -386,8 +394,13 @@ void __init mem_encrypt_init(void)
 	if (sev_active())
 		static_branch_enable(&sev_enable_key);
 
-	pr_info("AMD %s active\n",
-		sev_active() ? "Secure Encrypted Virtualization (SEV)"
-			     : "Secure Memory Encryption (SME)");
+	if (sev_es_active())
+		msg = "Secure Encrypted Virtualization - Encrypted State (SEV-ES)";
+	else if (sev_active())
+		msg = "Secure Encrypted Virtualization (SEV)";
+	else
+		msg = "Secure Memory Encryption (SME)";
+
+	pr_info("AMD %s active\n", msg);
 }
 
