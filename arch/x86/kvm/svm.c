@@ -473,6 +473,78 @@ static inline int sev_get_asid(struct kvm *kvm)
 	return sev->asid;
 }
 
+static inline struct vmcb_save_area *get_vmsa(struct vcpu_svm *svm)
+{
+	return &svm->vmcb->save;
+}
+
+static inline struct vmcb_seg *vmsa_seg_read(struct vcpu_svm *svm,
+					     enum vmsa_seg seg)
+{
+	struct vmcb_seg *save = (struct vmcb_seg *)get_vmsa(svm);
+
+	return &save[seg];
+}
+
+static inline void vmsa_seg_write(struct vcpu_svm *svm, enum vmsa_seg seg,
+				  struct vmcb_seg *val)
+{
+	struct vmcb_seg *save = (struct vmcb_seg *)get_vmsa(svm);
+
+	save[seg] = *val;
+}
+
+#define vmsa_seg_read_selector(_svm, _seg)		vmsa_seg_read(_svm, _seg)->selector
+#define vmsa_seg_read_attrib(_svm, _seg)		vmsa_seg_read(_svm, _seg)->attrib
+#define vmsa_seg_read_limit(_svm, _seg)			vmsa_seg_read(_svm, _seg)->limit
+#define vmsa_seg_read_base(_svm, _seg)			vmsa_seg_read(_svm, _seg)->base
+
+#define vmsa_seg_write_selector(_svm, _seg, _val)	vmsa_seg_read(_svm, _seg)->selector = _val
+#define vmsa_seg_write_attrib(_svm, _seg, _val)		vmsa_seg_read(_svm, _seg)->attrib = _val
+#define vmsa_seg_write_limit(_svm, _seg, _val)		vmsa_seg_read(_svm, _seg)->limit = _val
+#define vmsa_seg_write_base(_svm, _seg, _val)		vmsa_seg_read(_svm, _seg)->base = _val
+
+static inline u64 vmsa_reg_read(struct vcpu_svm *svm, enum vmsa_reg reg)
+{
+	u64 *save = (u64 *)get_vmsa(svm);
+
+	return save[reg];
+}
+
+static inline void vmsa_reg_write(struct vcpu_svm *svm, enum vmsa_reg reg,
+				  u64 val)
+{
+	u64 *save = (u64 *)get_vmsa(svm);
+
+	save[reg] = val;
+}
+
+static inline void vmsa_reg_and(struct vcpu_svm *svm, enum vmsa_reg reg,
+				u64 val)
+{
+	u64 *save = (u64 *)get_vmsa(svm);
+
+	save[reg] &= val;
+}
+
+static inline void vmsa_reg_or(struct vcpu_svm *svm, enum vmsa_reg reg,
+			       u64 val)
+{
+	u64 *save = (u64 *)get_vmsa(svm);
+
+	save[reg] |= val;
+}
+
+static inline u8 vmsa_cpl_read(struct vcpu_svm *svm)
+{
+	return get_vmsa(svm)->cpl;
+}
+
+static inline void vmsa_cpl_write(struct vcpu_svm *svm, u8 val)
+{
+	get_vmsa(svm)->cpl = val;
+}
+
 static inline void mark_all_dirty(struct vmcb *vmcb)
 {
 	vmcb->control.clean = 0;
@@ -750,7 +822,7 @@ static void svm_set_efer(struct kvm_vcpu *vcpu, u64 efer)
 	if (!npt_enabled && !(efer & EFER_LMA))
 		efer &= ~EFER_LME;
 
-	to_svm(vcpu)->vmcb->save.efer = efer | EFER_SVME;
+	vmsa_reg_write(to_svm(vcpu), VMSA_REG_EFER, efer | EFER_SVME);
 	mark_dirty(to_svm(vcpu)->vmcb, VMCB_CR);
 }
 
@@ -834,7 +906,7 @@ static void svm_queue_exception(struct kvm_vcpu *vcpu)
 		 */
 		skip_emulated_instruction(&svm->vcpu);
 		rip = kvm_rip_read(&svm->vcpu);
-		svm->int3_rip = rip + svm->vmcb->save.cs.base;
+		svm->int3_rip = rip + vmsa_seg_read_base(svm, VMSA_SEG_CS);
 		svm->int3_injected = rip - old_rip;
 	}
 
@@ -1177,9 +1249,9 @@ static void disable_nmi_singlestep(struct vcpu_svm *svm)
 	if (!(svm->vcpu.guest_debug & KVM_GUESTDBG_SINGLESTEP)) {
 		/* Clear our flags if they were not set by the guest */
 		if (!(svm->nmi_singlestep_guest_rflags & X86_EFLAGS_TF))
-			svm->vmcb->save.rflags &= ~X86_EFLAGS_TF;
+			vmsa_reg_and(svm, VMSA_REG_RFLAGS, ~X86_EFLAGS_TF);
 		if (!(svm->nmi_singlestep_guest_rflags & X86_EFLAGS_RF))
-			svm->vmcb->save.rflags &= ~X86_EFLAGS_RF;
+			vmsa_reg_and(svm, VMSA_REG_RFLAGS, ~X86_EFLAGS_RF);
 	}
 }
 
@@ -1528,7 +1600,7 @@ static void avic_init_vmcb(struct vcpu_svm *svm)
 static void init_vmcb(struct vcpu_svm *svm)
 {
 	struct vmcb_control_area *control = &svm->vmcb->control;
-	struct vmcb_save_area *save = &svm->vmcb->save;
+	struct vmcb_save_area *save = get_vmsa(svm);
 
 	svm->vcpu.arch.hflags = 0;
 
@@ -2352,7 +2424,7 @@ static void svm_vcpu_unblocking(struct kvm_vcpu *vcpu)
 static unsigned long svm_get_rflags(struct kvm_vcpu *vcpu)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
-	unsigned long rflags = svm->vmcb->save.rflags;
+	unsigned long rflags = vmsa_reg_read(svm, VMSA_REG_RFLAGS);
 
 	if (svm->nmi_singlestep) {
 		/* Hide our flags if they were not set by the guest */
@@ -2374,7 +2446,7 @@ static void svm_set_rflags(struct kvm_vcpu *vcpu, unsigned long rflags)
         * (caused by either a task switch or an inter-privilege IRET),
         * so we do not need to update the CPL here.
         */
-	to_svm(vcpu)->vmcb->save.rflags = rflags;
+	vmsa_reg_write(to_svm(vcpu), VMSA_REG_RFLAGS, rflags);
 }
 
 static void svm_cache_reg(struct kvm_vcpu *vcpu, enum kvm_reg reg)
@@ -2401,20 +2473,9 @@ static void svm_clear_vintr(struct vcpu_svm *svm)
 
 static struct vmcb_seg *svm_seg(struct kvm_vcpu *vcpu, int seg)
 {
-	struct vmcb_save_area *save = &to_svm(vcpu)->vmcb->save;
+	BUG_ON(seg > VMSA_SEG_TR);
 
-	switch (seg) {
-	case VCPU_SREG_CS: return &save->cs;
-	case VCPU_SREG_DS: return &save->ds;
-	case VCPU_SREG_ES: return &save->es;
-	case VCPU_SREG_FS: return &save->fs;
-	case VCPU_SREG_GS: return &save->gs;
-	case VCPU_SREG_SS: return &save->ss;
-	case VCPU_SREG_TR: return &save->tr;
-	case VCPU_SREG_LDTR: return &save->ldtr;
-	}
-	BUG();
-	return NULL;
+	return vmsa_seg_read(to_svm(vcpu), seg);
 }
 
 static u64 svm_get_segment_base(struct kvm_vcpu *vcpu, int seg)
@@ -2488,32 +2549,30 @@ static void svm_get_segment(struct kvm_vcpu *vcpu,
 		if (var->unusable)
 			var->db = 0;
 		/* This is symmetric with svm_set_segment() */
-		var->dpl = to_svm(vcpu)->vmcb->save.cpl;
+		var->dpl = vmsa_cpl_read(to_svm(vcpu));
 		break;
 	}
 }
 
 static int svm_get_cpl(struct kvm_vcpu *vcpu)
 {
-	struct vmcb_save_area *save = &to_svm(vcpu)->vmcb->save;
-
-	return save->cpl;
+	return vmsa_cpl_read(to_svm(vcpu));
 }
 
 static void svm_get_idt(struct kvm_vcpu *vcpu, struct desc_ptr *dt)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
 
-	dt->size = svm->vmcb->save.idtr.limit;
-	dt->address = svm->vmcb->save.idtr.base;
+	dt->size = vmsa_seg_read_limit(svm, VMSA_SEG_IDTR);
+	dt->address = vmsa_seg_read_base(svm, VMSA_SEG_IDTR);
 }
 
 static void svm_set_idt(struct kvm_vcpu *vcpu, struct desc_ptr *dt)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
 
-	svm->vmcb->save.idtr.limit = dt->size;
-	svm->vmcb->save.idtr.base = dt->address ;
+	vmsa_seg_write_limit(svm, VMSA_SEG_IDTR, dt->size);
+	vmsa_seg_write_base(svm, VMSA_SEG_IDTR, dt->address);
 	mark_dirty(svm->vmcb, VMCB_DT);
 }
 
@@ -2521,16 +2580,16 @@ static void svm_get_gdt(struct kvm_vcpu *vcpu, struct desc_ptr *dt)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
 
-	dt->size = svm->vmcb->save.gdtr.limit;
-	dt->address = svm->vmcb->save.gdtr.base;
+	dt->size = vmsa_seg_read_limit(svm, VMSA_SEG_GDTR);
+	dt->address = vmsa_seg_read_base(svm, VMSA_SEG_GDTR);
 }
 
 static void svm_set_gdt(struct kvm_vcpu *vcpu, struct desc_ptr *dt)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
 
-	svm->vmcb->save.gdtr.limit = dt->size;
-	svm->vmcb->save.gdtr.base = dt->address ;
+	vmsa_seg_write_limit(svm, VMSA_SEG_GDTR, dt->size);
+	vmsa_seg_write_base(svm, VMSA_SEG_GDTR, dt->address);
 	mark_dirty(svm->vmcb, VMCB_DT);
 }
 
@@ -2549,14 +2608,15 @@ static void svm_decache_cr4_guest_bits(struct kvm_vcpu *vcpu)
 static void update_cr0_intercept(struct vcpu_svm *svm)
 {
 	ulong gcr0 = svm->vcpu.arch.cr0;
-	u64 *hcr0 = &svm->vmcb->save.cr0;
+	u64 hcr0;
 
-	*hcr0 = (*hcr0 & ~SVM_CR0_SELECTIVE_MASK)
+	hcr0 = (vmsa_reg_read(svm, VMSA_REG_CR0) & ~SVM_CR0_SELECTIVE_MASK)
 		| (gcr0 & SVM_CR0_SELECTIVE_MASK);
 
+	vmsa_reg_write(svm, VMSA_REG_CR0, hcr0);
 	mark_dirty(svm->vmcb, VMCB_CR);
 
-	if (gcr0 == *hcr0) {
+	if (gcr0 == hcr0) {
 		clr_cr_intercept(svm, INTERCEPT_CR0_READ);
 		clr_cr_intercept(svm, INTERCEPT_CR0_WRITE);
 	} else {
@@ -2573,12 +2633,12 @@ static void svm_set_cr0(struct kvm_vcpu *vcpu, unsigned long cr0)
 	if (vcpu->arch.efer & EFER_LME) {
 		if (!is_paging(vcpu) && (cr0 & X86_CR0_PG)) {
 			vcpu->arch.efer |= EFER_LMA;
-			svm->vmcb->save.efer |= EFER_LMA | EFER_LME;
+			vmsa_reg_or(svm, VMSA_REG_EFER, EFER_LMA | EFER_LME);
 		}
 
 		if (is_paging(vcpu) && !(cr0 & X86_CR0_PG)) {
 			vcpu->arch.efer &= ~EFER_LMA;
-			svm->vmcb->save.efer &= ~(EFER_LMA | EFER_LME);
+			vmsa_reg_and(svm, VMSA_REG_EFER, ~(EFER_LMA | EFER_LME));
 		}
 	}
 #endif
@@ -2594,7 +2654,7 @@ static void svm_set_cr0(struct kvm_vcpu *vcpu, unsigned long cr0)
 	 */
 	if (kvm_check_has_quirk(vcpu->kvm, KVM_X86_QUIRK_CD_NW_CLEARED))
 		cr0 &= ~(X86_CR0_CD | X86_CR0_NW);
-	svm->vmcb->save.cr0 = cr0;
+	vmsa_reg_write(svm, VMSA_REG_CR0, cr0);
 	mark_dirty(svm->vmcb, VMCB_CR);
 	update_cr0_intercept(svm);
 }
@@ -2602,7 +2662,7 @@ static void svm_set_cr0(struct kvm_vcpu *vcpu, unsigned long cr0)
 static int svm_set_cr4(struct kvm_vcpu *vcpu, unsigned long cr4)
 {
 	unsigned long host_cr4_mce = cr4_read_shadow() & X86_CR4_MCE;
-	unsigned long old_cr4 = to_svm(vcpu)->vmcb->save.cr4;
+	unsigned long old_cr4 = vmsa_reg_read(to_svm(vcpu), VMSA_REG_CR4);
 
 	if (cr4 & X86_CR4_VMXE)
 		return 1;
@@ -2614,7 +2674,7 @@ static int svm_set_cr4(struct kvm_vcpu *vcpu, unsigned long cr4)
 	if (!npt_enabled)
 		cr4 |= X86_CR4_PAE;
 	cr4 |= host_cr4_mce;
-	to_svm(vcpu)->vmcb->save.cr4 = cr4;
+	vmsa_reg_write(to_svm(vcpu), VMSA_REG_CR4, cr4);
 	mark_dirty(to_svm(vcpu)->vmcb, VMCB_CR);
 	return 0;
 }
@@ -2645,7 +2705,7 @@ static void svm_set_segment(struct kvm_vcpu *vcpu,
 	 */
 	if (seg == VCPU_SREG_SS)
 		/* This is symmetric with svm_get_segment() */
-		svm->vmcb->save.cpl = (var->dpl & 3);
+		vmsa_cpl_write(svm, (var->dpl & 3));
 
 	mark_dirty(svm->vmcb, VMCB_SEG);
 }
@@ -2679,14 +2739,14 @@ static void new_asid(struct vcpu_svm *svm, struct svm_cpu_data *sd)
 
 static u64 svm_get_dr6(struct kvm_vcpu *vcpu)
 {
-	return to_svm(vcpu)->vmcb->save.dr6;
+	return vmsa_reg_read(to_svm(vcpu), VMSA_REG_DR6);
 }
 
 static void svm_set_dr6(struct kvm_vcpu *vcpu, unsigned long value)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
 
-	svm->vmcb->save.dr6 = value;
+	vmsa_reg_write(svm, VMSA_REG_DR6, value);
 	mark_dirty(svm->vmcb, VMCB_DR);
 }
 
@@ -2699,7 +2759,7 @@ static void svm_sync_dirty_debug_regs(struct kvm_vcpu *vcpu)
 	get_debugreg(vcpu->arch.db[2], 2);
 	get_debugreg(vcpu->arch.db[3], 3);
 	vcpu->arch.dr6 = svm_get_dr6(vcpu);
-	vcpu->arch.dr7 = svm->vmcb->save.dr7;
+	vcpu->arch.dr7 = vmsa_reg_read(svm, VMSA_REG_DR7);
 
 	vcpu->arch.switch_db_regs &= ~KVM_DEBUGREG_WONT_EXIT;
 	set_dr_intercepts(svm);
@@ -2709,7 +2769,7 @@ static void svm_set_dr7(struct kvm_vcpu *vcpu, unsigned long value)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
 
-	svm->vmcb->save.dr7 = value;
+	vmsa_reg_write(svm, VMSA_REG_DR7, value);
 	mark_dirty(svm->vmcb, VMCB_DR);
 }
 
@@ -2758,7 +2818,8 @@ static int db_interception(struct vcpu_svm *svm)
 	    (KVM_GUESTDBG_SINGLESTEP | KVM_GUESTDBG_USE_HW_BP)) {
 		kvm_run->exit_reason = KVM_EXIT_DEBUG;
 		kvm_run->debug.arch.pc =
-			svm->vmcb->save.cs.base + svm->vmcb->save.rip;
+			vmsa_seg_read_base(svm, VMSA_SEG_CS) +
+			vmsa_reg_read(svm, VMSA_REG_RIP);
 		kvm_run->debug.arch.exception = DB_VECTOR;
 		return 0;
 	}
@@ -2771,7 +2832,8 @@ static int bp_interception(struct vcpu_svm *svm)
 	struct kvm_run *kvm_run = svm->vcpu.run;
 
 	kvm_run->exit_reason = KVM_EXIT_DEBUG;
-	kvm_run->debug.arch.pc = svm->vmcb->save.cs.base + svm->vmcb->save.rip;
+	kvm_run->debug.arch.pc = vmsa_seg_read_base(svm, VMSA_SEG_CS) +
+				 vmsa_reg_read(svm, VMSA_REG_RIP);
 	kvm_run->debug.arch.exception = BP_VECTOR;
 	return 0;
 }
@@ -3024,7 +3086,7 @@ static int nested_svm_check_permissions(struct vcpu_svm *svm)
 		return 1;
 	}
 
-	if (svm->vmcb->save.cpl) {
+	if (vmsa_cpl_read(svm)) {
 		kvm_inject_gp(&svm->vcpu, 0);
 		return 1;
 	}
@@ -3095,7 +3157,7 @@ static inline bool nested_svm_intr(struct vcpu_svm *svm)
 		 * the #vmexit here.
 		 */
 		svm->nested.exit_required = true;
-		trace_kvm_nested_intr_vmexit(svm->vmcb->save.rip);
+		trace_kvm_nested_intr_vmexit(vmsa_reg_read(svm, VMSA_REG_RIP));
 		return false;
 	}
 
@@ -3438,18 +3500,18 @@ static int nested_svm_vmexit(struct vcpu_svm *svm)
 	svm->nested.nested_cr3 = 0;
 
 	/* Restore selected save entries */
-	svm->vmcb->save.es = hsave->save.es;
-	svm->vmcb->save.cs = hsave->save.cs;
-	svm->vmcb->save.ss = hsave->save.ss;
-	svm->vmcb->save.ds = hsave->save.ds;
-	svm->vmcb->save.gdtr = hsave->save.gdtr;
-	svm->vmcb->save.idtr = hsave->save.idtr;
+	vmsa_seg_write(svm, VMSA_SEG_ES, &hsave->save.es);
+	vmsa_seg_write(svm, VMSA_SEG_CS, &hsave->save.cs);
+	vmsa_seg_write(svm, VMSA_SEG_SS, &hsave->save.ss);
+	vmsa_seg_write(svm, VMSA_SEG_DS, &hsave->save.ds);
+	vmsa_seg_write(svm, VMSA_SEG_GDTR, &hsave->save.gdtr);
+	vmsa_seg_write(svm, VMSA_SEG_IDTR, &hsave->save.idtr);
 	kvm_set_rflags(&svm->vcpu, hsave->save.rflags);
 	svm_set_efer(&svm->vcpu, hsave->save.efer);
 	svm_set_cr0(&svm->vcpu, hsave->save.cr0 | X86_CR0_PE);
 	svm_set_cr4(&svm->vcpu, hsave->save.cr4);
 	if (npt_enabled) {
-		svm->vmcb->save.cr3 = hsave->save.cr3;
+		vmsa_reg_write(svm, VMSA_REG_CR3, hsave->save.cr3);
 		svm->vcpu.arch.cr3 = hsave->save.cr3;
 	} else {
 		(void)kvm_set_cr3(&svm->vcpu, hsave->save.cr3);
@@ -3457,8 +3519,8 @@ static int nested_svm_vmexit(struct vcpu_svm *svm)
 	kvm_register_write(&svm->vcpu, VCPU_REGS_RAX, hsave->save.rax);
 	kvm_register_write(&svm->vcpu, VCPU_REGS_RSP, hsave->save.rsp);
 	kvm_register_write(&svm->vcpu, VCPU_REGS_RIP, hsave->save.rip);
-	svm->vmcb->save.dr7 = 0;
-	svm->vmcb->save.cpl = 0;
+	vmsa_reg_write(svm, VMSA_REG_DR7, 0);
+	vmsa_cpl_write(svm, 0);
 	svm->vmcb->control.exit_int_info = 0;
 
 	mark_all_dirty(svm->vmcb);
@@ -3542,18 +3604,18 @@ static void enter_svm_guest_mode(struct vcpu_svm *svm, u64 vmcb_gpa,
 	}
 
 	/* Load the nested guest state */
-	svm->vmcb->save.es = nested_vmcb->save.es;
-	svm->vmcb->save.cs = nested_vmcb->save.cs;
-	svm->vmcb->save.ss = nested_vmcb->save.ss;
-	svm->vmcb->save.ds = nested_vmcb->save.ds;
-	svm->vmcb->save.gdtr = nested_vmcb->save.gdtr;
-	svm->vmcb->save.idtr = nested_vmcb->save.idtr;
+	vmsa_seg_write(svm, VMSA_SEG_ES, &nested_vmcb->save.es);
+	vmsa_seg_write(svm, VMSA_SEG_CS, &nested_vmcb->save.cs);
+	vmsa_seg_write(svm, VMSA_SEG_SS, &nested_vmcb->save.ss);
+	vmsa_seg_write(svm, VMSA_SEG_DS, &nested_vmcb->save.ds);
+	vmsa_seg_write(svm, VMSA_SEG_GDTR, &nested_vmcb->save.gdtr);
+	vmsa_seg_write(svm, VMSA_SEG_IDTR, &nested_vmcb->save.idtr);
 	kvm_set_rflags(&svm->vcpu, nested_vmcb->save.rflags);
 	svm_set_efer(&svm->vcpu, nested_vmcb->save.efer);
 	svm_set_cr0(&svm->vcpu, nested_vmcb->save.cr0);
 	svm_set_cr4(&svm->vcpu, nested_vmcb->save.cr4);
 	if (npt_enabled) {
-		svm->vmcb->save.cr3 = nested_vmcb->save.cr3;
+		vmsa_reg_write(svm, VMSA_REG_CR3, nested_vmcb->save.cr3);
 		svm->vcpu.arch.cr3 = nested_vmcb->save.cr3;
 	} else
 		(void)kvm_set_cr3(&svm->vcpu, nested_vmcb->save.cr3);
@@ -3561,18 +3623,19 @@ static void enter_svm_guest_mode(struct vcpu_svm *svm, u64 vmcb_gpa,
 	/* Guest paging mode is active - reset mmu */
 	kvm_mmu_reset_context(&svm->vcpu);
 
-	svm->vmcb->save.cr2 = svm->vcpu.arch.cr2 = nested_vmcb->save.cr2;
+	vmsa_reg_write(svm, VMSA_REG_CR2, nested_vmcb->save.cr2);
+	svm->vcpu.arch.cr2 = nested_vmcb->save.cr2;
 	kvm_register_write(&svm->vcpu, VCPU_REGS_RAX, nested_vmcb->save.rax);
 	kvm_register_write(&svm->vcpu, VCPU_REGS_RSP, nested_vmcb->save.rsp);
 	kvm_register_write(&svm->vcpu, VCPU_REGS_RIP, nested_vmcb->save.rip);
 
 	/* In case we don't even reach vcpu_run, the fields are not updated */
-	svm->vmcb->save.rax = nested_vmcb->save.rax;
-	svm->vmcb->save.rsp = nested_vmcb->save.rsp;
-	svm->vmcb->save.rip = nested_vmcb->save.rip;
-	svm->vmcb->save.dr7 = nested_vmcb->save.dr7;
-	svm->vmcb->save.dr6 = nested_vmcb->save.dr6;
-	svm->vmcb->save.cpl = nested_vmcb->save.cpl;
+	vmsa_reg_write(svm, VMSA_REG_RAX, nested_vmcb->save.rax);
+	vmsa_reg_write(svm, VMSA_REG_RSP, nested_vmcb->save.rsp);
+	vmsa_reg_write(svm, VMSA_REG_RIP, nested_vmcb->save.rip);
+	vmsa_reg_write(svm, VMSA_REG_DR7, nested_vmcb->save.dr7);
+	vmsa_reg_write(svm, VMSA_REG_DR6, nested_vmcb->save.dr6);
+	vmsa_cpl_write(svm, nested_vmcb->save.cpl);
 
 	svm->nested.vmcb_msrpm = nested_vmcb->control.msrpm_base_pa & ~0x0fffULL;
 	svm->nested.vmcb_iopm  = nested_vmcb->control.iopm_base_pa  & ~0x0fffULL;
@@ -3639,9 +3702,9 @@ static bool nested_svm_vmrun(struct vcpu_svm *svm)
 	struct page *page;
 	u64 vmcb_gpa;
 
-	vmcb_gpa = svm->vmcb->save.rax;
+	vmcb_gpa = vmsa_reg_read(svm, VMSA_REG_RAX);
 
-	nested_vmcb = nested_svm_map(svm, svm->vmcb->save.rax, &page);
+	nested_vmcb = nested_svm_map(svm, vmcb_gpa, &page);
 	if (!nested_vmcb)
 		return false;
 
@@ -3656,7 +3719,7 @@ static bool nested_svm_vmrun(struct vcpu_svm *svm)
 		return false;
 	}
 
-	trace_kvm_nested_vmrun(svm->vmcb->save.rip, vmcb_gpa,
+	trace_kvm_nested_vmrun(vmsa_reg_read(svm, VMSA_REG_RIP), vmcb_gpa,
 			       nested_vmcb->save.rip,
 			       nested_vmcb->control.int_ctl,
 			       nested_vmcb->control.event_inj,
@@ -3725,7 +3788,7 @@ static int vmload_interception(struct vcpu_svm *svm)
 	if (nested_svm_check_permissions(svm))
 		return 1;
 
-	nested_vmcb = nested_svm_map(svm, svm->vmcb->save.rax, &page);
+	nested_vmcb = nested_svm_map(svm, vmsa_reg_read(svm, VMSA_REG_RAX), &page);
 	if (!nested_vmcb)
 		return 1;
 
@@ -3747,7 +3810,7 @@ static int vmsave_interception(struct vcpu_svm *svm)
 	if (nested_svm_check_permissions(svm))
 		return 1;
 
-	nested_vmcb = nested_svm_map(svm, svm->vmcb->save.rax, &page);
+	nested_vmcb = nested_svm_map(svm, vmsa_reg_read(svm, VMSA_REG_RAX), &page);
 	if (!nested_vmcb)
 		return 1;
 
@@ -3837,7 +3900,7 @@ static int invlpga_interception(struct vcpu_svm *svm)
 {
 	struct kvm_vcpu *vcpu = &svm->vcpu;
 
-	trace_kvm_invlpga(svm->vmcb->save.rip, kvm_register_read(&svm->vcpu, VCPU_REGS_RCX),
+	trace_kvm_invlpga(vmsa_reg_read(svm, VMSA_REG_RIP), kvm_register_read(&svm->vcpu, VCPU_REGS_RCX),
 			  kvm_register_read(&svm->vcpu, VCPU_REGS_RAX));
 
 	/* Let's treat INVLPGA the same as INVLPG (can be optimized!) */
@@ -3849,7 +3912,7 @@ static int invlpga_interception(struct vcpu_svm *svm)
 
 static int skinit_interception(struct vcpu_svm *svm)
 {
-	trace_kvm_skinit(svm->vmcb->save.rip, kvm_register_read(&svm->vcpu, VCPU_REGS_RAX));
+	trace_kvm_skinit(vmsa_reg_read(svm, VMSA_REG_RIP), kvm_register_read(&svm->vcpu, VCPU_REGS_RAX));
 
 	kvm_queue_exception(&svm->vcpu, UD_VECTOR);
 	return 1;
@@ -4160,24 +4223,24 @@ static int svm_get_msr(struct kvm_vcpu *vcpu, struct msr_data *msr_info)
 
 	switch (msr_info->index) {
 	case MSR_STAR:
-		msr_info->data = svm->vmcb->save.star;
+		msr_info->data = vmsa_reg_read(svm, VMSA_REG_STAR);
 		break;
 #ifdef CONFIG_X86_64
 	case MSR_LSTAR:
-		msr_info->data = svm->vmcb->save.lstar;
+		msr_info->data = vmsa_reg_read(svm, VMSA_REG_LSTAR);
 		break;
 	case MSR_CSTAR:
-		msr_info->data = svm->vmcb->save.cstar;
+		msr_info->data = vmsa_reg_read(svm, VMSA_REG_CSTAR);
 		break;
 	case MSR_KERNEL_GS_BASE:
-		msr_info->data = svm->vmcb->save.kernel_gs_base;
+		msr_info->data = vmsa_reg_read(svm, VMSA_REG_KERNEL_GS_BASE);
 		break;
 	case MSR_SYSCALL_MASK:
-		msr_info->data = svm->vmcb->save.sfmask;
+		msr_info->data = vmsa_reg_read(svm, VMSA_REG_SFMASK);
 		break;
 #endif
 	case MSR_IA32_SYSENTER_CS:
-		msr_info->data = svm->vmcb->save.sysenter_cs;
+		msr_info->data = vmsa_reg_read(svm, VMSA_REG_SYSENTER_CS);
 		break;
 	case MSR_IA32_SYSENTER_EIP:
 		msr_info->data = svm->sysenter_eip;
@@ -4196,19 +4259,19 @@ static int svm_get_msr(struct kvm_vcpu *vcpu, struct msr_data *msr_info)
 	 * implemented.
 	 */
 	case MSR_IA32_DEBUGCTLMSR:
-		msr_info->data = svm->vmcb->save.dbgctl;
+		msr_info->data = vmsa_reg_read(svm, VMSA_REG_DBGCTL);
 		break;
 	case MSR_IA32_LASTBRANCHFROMIP:
-		msr_info->data = svm->vmcb->save.br_from;
+		msr_info->data = vmsa_reg_read(svm, VMSA_REG_BR_FROM);
 		break;
 	case MSR_IA32_LASTBRANCHTOIP:
-		msr_info->data = svm->vmcb->save.br_to;
+		msr_info->data = vmsa_reg_read(svm, VMSA_REG_BR_TO);
 		break;
 	case MSR_IA32_LASTINTFROMIP:
-		msr_info->data = svm->vmcb->save.last_excp_from;
+		msr_info->data = vmsa_reg_read(svm, VMSA_REG_LAST_EXCP_FROM);
 		break;
 	case MSR_IA32_LASTINTTOIP:
-		msr_info->data = svm->vmcb->save.last_excp_to;
+		msr_info->data = vmsa_reg_read(svm, VMSA_REG_LAST_EXCP_TO);
 		break;
 	case MSR_VM_HSAVE_PA:
 		msr_info->data = svm->nested.hsave_msr;
@@ -4316,7 +4379,7 @@ static int svm_set_msr(struct kvm_vcpu *vcpu, struct msr_data *msr)
 		if (!kvm_mtrr_valid(vcpu, MSR_IA32_CR_PAT, data))
 			return 1;
 		vcpu->arch.pat = data;
-		svm->vmcb->save.g_pat = data;
+		vmsa_reg_write(svm, VMSA_REG_GPAT, data);
 		mark_dirty(svm->vmcb, VMCB_NPT);
 		break;
 	case MSR_IA32_SPEC_CTRL:
@@ -4374,32 +4437,32 @@ static int svm_set_msr(struct kvm_vcpu *vcpu, struct msr_data *msr)
 		svm->virt_spec_ctrl = data;
 		break;
 	case MSR_STAR:
-		svm->vmcb->save.star = data;
+		vmsa_reg_write(svm, VMSA_REG_STAR, data);
 		break;
 #ifdef CONFIG_X86_64
 	case MSR_LSTAR:
-		svm->vmcb->save.lstar = data;
+		vmsa_reg_write(svm, VMSA_REG_LSTAR, data);
 		break;
 	case MSR_CSTAR:
-		svm->vmcb->save.cstar = data;
+		vmsa_reg_write(svm, VMSA_REG_CSTAR, data);
 		break;
 	case MSR_KERNEL_GS_BASE:
-		svm->vmcb->save.kernel_gs_base = data;
+		vmsa_reg_write(svm, VMSA_REG_KERNEL_GS_BASE, data);
 		break;
 	case MSR_SYSCALL_MASK:
-		svm->vmcb->save.sfmask = data;
+		vmsa_reg_write(svm, VMSA_REG_SFMASK, data);
 		break;
 #endif
 	case MSR_IA32_SYSENTER_CS:
-		svm->vmcb->save.sysenter_cs = data;
+		vmsa_reg_write(svm, VMSA_REG_SYSENTER_CS, data);
 		break;
 	case MSR_IA32_SYSENTER_EIP:
 		svm->sysenter_eip = data;
-		svm->vmcb->save.sysenter_eip = data;
+		vmsa_reg_write(svm, VMSA_REG_SYSENTER_EIP, data);
 		break;
 	case MSR_IA32_SYSENTER_ESP:
 		svm->sysenter_esp = data;
-		svm->vmcb->save.sysenter_esp = data;
+		vmsa_reg_write(svm, VMSA_REG_SYSENTER_ESP, data);
 		break;
 	case MSR_TSC_AUX:
 		if (!boot_cpu_has(X86_FEATURE_RDTSCP))
@@ -4422,7 +4485,7 @@ static int svm_set_msr(struct kvm_vcpu *vcpu, struct msr_data *msr)
 		if (data & DEBUGCTL_RESERVED_BITS)
 			return 1;
 
-		svm->vmcb->save.dbgctl = data;
+		vmsa_reg_write(svm, VMSA_REG_DBGCTL, data);
 		mark_dirty(svm->vmcb, VMCB_LBR);
 		if (data & (1ULL<<0))
 			svm_enable_lbrv(svm);
@@ -4874,7 +4937,7 @@ static void dump_vmcb(struct kvm_vcpu *vcpu)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
 	struct vmcb_control_area *control = &svm->vmcb->control;
-	struct vmcb_save_area *save = &svm->vmcb->save;
+	struct vmcb_save_area *save = get_vmsa(svm);
 
 	pr_err("VMCB Control Area:\n");
 	pr_err("%-20s%04x\n", "cr_read:", control->intercept_cr & 0xffff);
@@ -4998,9 +5061,9 @@ static int handle_exit(struct kvm_vcpu *vcpu)
 	trace_kvm_exit(exit_code, vcpu, KVM_ISA_SVM);
 
 	if (!is_cr_intercept(svm, INTERCEPT_CR0_WRITE))
-		vcpu->arch.cr0 = svm->vmcb->save.cr0;
+		vcpu->arch.cr0 = vmsa_reg_read(svm, VMSA_REG_CR0);
 	if (npt_enabled)
-		vcpu->arch.cr3 = svm->vmcb->save.cr3;
+		vcpu->arch.cr3 = vmsa_reg_read(svm, VMSA_REG_CR3);
 
 	if (unlikely(svm->nested.exit_required)) {
 		nested_svm_vmexit(svm);
@@ -5012,7 +5075,7 @@ static int handle_exit(struct kvm_vcpu *vcpu)
 	if (is_guest_mode(vcpu)) {
 		int vmexit;
 
-		trace_kvm_nested_vmexit(svm->vmcb->save.rip, exit_code,
+		trace_kvm_nested_vmexit(vmsa_reg_read(svm, VMSA_REG_RIP), exit_code,
 					svm->vmcb->control.exit_info_1,
 					svm->vmcb->control.exit_info_2,
 					svm->vmcb->control.exit_int_info,
@@ -5508,7 +5571,7 @@ static void enable_nmi_window(struct kvm_vcpu *vcpu)
 	 */
 	svm->nmi_singlestep_guest_rflags = svm_get_rflags(vcpu);
 	svm->nmi_singlestep = true;
-	svm->vmcb->save.rflags |= (X86_EFLAGS_TF | X86_EFLAGS_RF);
+	vmsa_reg_or(svm, VMSA_REG_RFLAGS, (X86_EFLAGS_TF | X86_EFLAGS_RF));
 }
 
 static int svm_set_tss_addr(struct kvm *kvm, unsigned int addr)
@@ -5648,9 +5711,9 @@ static void svm_vcpu_run(struct kvm_vcpu *vcpu)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
 
-	svm->vmcb->save.rax = vcpu->arch.regs[VCPU_REGS_RAX];
-	svm->vmcb->save.rsp = vcpu->arch.regs[VCPU_REGS_RSP];
-	svm->vmcb->save.rip = vcpu->arch.regs[VCPU_REGS_RIP];
+	vmsa_reg_write(svm, VMSA_REG_RAX, vcpu->arch.regs[VCPU_REGS_RAX]);
+	vmsa_reg_write(svm, VMSA_REG_RSP, vcpu->arch.regs[VCPU_REGS_RSP]);
+	vmsa_reg_write(svm, VMSA_REG_RIP, vcpu->arch.regs[VCPU_REGS_RIP]);
 
 	/*
 	 * A vmexit emulation is required before the vcpu can be executed
@@ -5679,7 +5742,7 @@ static void svm_vcpu_run(struct kvm_vcpu *vcpu)
 
 	sync_lapic_to_cr8(vcpu);
 
-	svm->vmcb->save.cr2 = vcpu->arch.cr2;
+	vmsa_reg_write(svm, VMSA_REG_CR2, vcpu->arch.cr2);
 
 	clgi();
 	kvm_load_guest_xcr0(vcpu);
@@ -5820,10 +5883,10 @@ static void svm_vcpu_run(struct kvm_vcpu *vcpu)
 
 	x86_spec_ctrl_restore_host(svm->spec_ctrl, svm->virt_spec_ctrl);
 
-	vcpu->arch.cr2 = svm->vmcb->save.cr2;
-	vcpu->arch.regs[VCPU_REGS_RAX] = svm->vmcb->save.rax;
-	vcpu->arch.regs[VCPU_REGS_RSP] = svm->vmcb->save.rsp;
-	vcpu->arch.regs[VCPU_REGS_RIP] = svm->vmcb->save.rip;
+	vcpu->arch.cr2 = vmsa_reg_read(svm, VMSA_REG_CR2);
+	vcpu->arch.regs[VCPU_REGS_RAX] = vmsa_reg_read(svm, VMSA_REG_RAX);
+	vcpu->arch.regs[VCPU_REGS_RSP] = vmsa_reg_read(svm, VMSA_REG_RSP);
+	vcpu->arch.regs[VCPU_REGS_RIP] = vmsa_reg_read(svm, VMSA_REG_RIP);
 
 	if (unlikely(svm->vmcb->control.exit_code == SVM_EXIT_NMI))
 		kvm_before_interrupt(&svm->vcpu);
@@ -5867,7 +5930,7 @@ static void svm_set_cr3(struct kvm_vcpu *vcpu, unsigned long root)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
 
-	svm->vmcb->save.cr3 = __sme_set(root);
+	vmsa_reg_write(svm, VMSA_REG_CR3, __sme_set(root));
 	mark_dirty(svm->vmcb, VMCB_CR);
 }
 
@@ -5879,7 +5942,7 @@ static void set_tdp_cr3(struct kvm_vcpu *vcpu, unsigned long root)
 	mark_dirty(svm->vmcb, VMCB_NPT);
 
 	/* Also sync guest cr3 here in case we live migrate */
-	svm->vmcb->save.cr3 = kvm_read_cr3(vcpu);
+	vmsa_reg_write(svm, VMSA_REG_CR3, kvm_read_cr3(vcpu));
 	mark_dirty(svm->vmcb, VMCB_CR);
 }
 
@@ -6267,9 +6330,9 @@ static int svm_pre_enter_smm(struct kvm_vcpu *vcpu, char *smstate)
 		/* FEE0h - SVM Guest VMCB Physical Address */
 		put_smstate(u64, smstate, 0x7ee0, svm->nested.vmcb);
 
-		svm->vmcb->save.rax = vcpu->arch.regs[VCPU_REGS_RAX];
-		svm->vmcb->save.rsp = vcpu->arch.regs[VCPU_REGS_RSP];
-		svm->vmcb->save.rip = vcpu->arch.regs[VCPU_REGS_RIP];
+		vmsa_reg_write(svm, VMSA_REG_RAX, vcpu->arch.regs[VCPU_REGS_RAX]);
+		vmsa_reg_write(svm, VMSA_REG_RSP, vcpu->arch.regs[VCPU_REGS_RSP]);
+		vmsa_reg_write(svm, VMSA_REG_RIP, vcpu->arch.regs[VCPU_REGS_RIP]);
 
 		ret = nested_svm_vmexit(svm);
 		if (ret)
