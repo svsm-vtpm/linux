@@ -30,34 +30,53 @@
 #include <asm/hypervisor.h>
 #include <asm/timer.h>
 #include <asm/apic.h>
+#include <asm/svm.h>
+#include <asm/mem_encrypt_vc.h>
 
 #undef pr_fmt
 #define pr_fmt(fmt)	"vmware: " fmt
 
-#define CPUID_VMWARE_INFO_LEAF	0x40000000
+#define CPUID_VMWARE_INFO_LEAF               0x40000000
+#define CPUID_VMWARE_FEATURES_LEAF           0x40000010
+#define CPUID_VMWARE_FEATURES_ECX_VMMCALL    1
+
 #define VMWARE_HYPERVISOR_MAGIC	0x564D5868
 #define VMWARE_HYPERVISOR_PORT	0x5658
 
-#define VMWARE_PORT_CMD_GETVERSION	10
-#define VMWARE_PORT_CMD_GETHZ		45
-#define VMWARE_PORT_CMD_GETVCPU_INFO	68
-#define VMWARE_PORT_CMD_LEGACY_X2APIC	3
-#define VMWARE_PORT_CMD_VCPU_RESERVED	31
+#define VMWARE_CMD_GETVERSION    10
+#define VMWARE_CMD_GETHZ         45
+#define VMWARE_CMD_GETVCPU_INFO  68
+#define VMWARE_CMD_LEGACY_X2APIC  3
+#define VMWARE_CMD_VCPU_RESERVED 31
 
 #define VMWARE_PORT(cmd, eax, ebx, ecx, edx)				\
 	__asm__("inl (%%dx)" :						\
 			"=a"(eax), "=c"(ecx), "=d"(edx), "=b"(ebx) :	\
 			"0"(VMWARE_HYPERVISOR_MAGIC),			\
-			"1"(VMWARE_PORT_CMD_##cmd),			\
+			"1"(VMWARE_CMD_##cmd),			        \
 			"2"(VMWARE_HYPERVISOR_PORT), "3"(UINT_MAX) :	\
-			"memory");
+			"memory")
+#define VMWARE_VMMCALL(cmd, eax, ebx, ecx, edx)                         \
+	__asm__("vmmcall" :						\
+			"=a"(eax), "=c"(ecx), "=d"(edx), "=b"(ebx) :	\
+			"0"(VMWARE_HYPERVISOR_MAGIC),			\
+			"1"(VMWARE_CMD_##cmd),			        \
+			"2"(VMWARE_HYPERVISOR_PORT), "3"(UINT_MAX) :	\
+			"memory")
+#define VMWARE_CMD(cmd, eax, ebx, ecx, edx)                             \
+        if (vmware_use_vmmcall) {                                       \
+                VMWARE_VMMCALL(cmd, eax, ebx, ecx, edx);                \
+        } else {                                                        \
+                VMWARE_PORT(cmd, eax, ebx, ecx, edx);                   \
+        }                                                               \
 
 static unsigned long vmware_tsc_khz __ro_after_init;
+static bool vmware_use_vmmcall      __ro_after_init;
 
 static inline int __vmware_platform(void)
 {
 	uint32_t eax, ebx, ecx, edx;
-	VMWARE_PORT(GETVERSION, eax, ebx, ecx, edx);
+	VMWARE_CMD(GETVERSION, eax, ebx, ecx, edx);
 	return eax != (uint32_t)-1 && ebx == VMWARE_HYPERVISOR_MAGIC;
 }
 
@@ -136,7 +155,7 @@ static void __init vmware_platform_setup(void)
 	uint32_t eax, ebx, ecx, edx;
 	uint64_t lpj, tsc_khz;
 
-	VMWARE_PORT(GETHZ, eax, ebx, ecx, edx);
+	VMWARE_CMD(GETHZ, eax, ebx, ecx, edx);
 
 	if (ebx != UINT_MAX) {
 		lpj = tsc_khz = eax | (((uint64_t)ebx) << 32);
@@ -174,6 +193,15 @@ static void __init vmware_platform_setup(void)
 	vmware_set_capabilities();
 }
 
+static bool
+vmware_supports_vmmcall(void)
+{
+	int eax, ebx, ecx, edx;
+
+	cpuid(CPUID_VMWARE_FEATURES_LEAF, &eax, &ebx, &ecx, &edx);
+	return (ecx & CPUID_VMWARE_FEATURES_ECX_VMMCALL) != 0;
+}
+
 /*
  * While checking the dmi string information, just checking the product
  * serial key should be enough, as this will always have a VMware
@@ -187,8 +215,12 @@ static uint32_t __init vmware_platform(void)
 
 		cpuid(CPUID_VMWARE_INFO_LEAF, &eax, &hyper_vendor_id[0],
 		      &hyper_vendor_id[1], &hyper_vendor_id[2]);
-		if (!memcmp(hyper_vendor_id, "VMwareVMware", 12))
+		if (!memcmp(hyper_vendor_id, "VMwareVMware", 12)) {
+                        if (eax >= CPUID_VMWARE_FEATURES_LEAF)
+                                vmware_use_vmmcall = vmware_supports_vmmcall();
+
 			return CPUID_VMWARE_INFO_LEAF;
+                }
 	} else if (dmi_available && dmi_name_in_serial("VMware") &&
 		   __vmware_platform())
 		return 1;
@@ -200,9 +232,54 @@ static uint32_t __init vmware_platform(void)
 static bool __init vmware_legacy_x2apic_available(void)
 {
 	uint32_t eax, ebx, ecx, edx;
-	VMWARE_PORT(GETVCPU_INFO, eax, ebx, ecx, edx);
-	return (eax & (1 << VMWARE_PORT_CMD_VCPU_RESERVED)) == 0 &&
-	       (eax & (1 << VMWARE_PORT_CMD_LEGACY_X2APIC)) != 0;
+	VMWARE_CMD(GETVCPU_INFO, eax, ebx, ecx, edx);
+	return (eax & (1 << VMWARE_CMD_VCPU_RESERVED)) == 0 &&
+	       (eax & (1 << VMWARE_CMD_LEGACY_X2APIC)) != 0;
+}
+
+static int vmware_sev_es_hypercall(struct ghcb *ghcb, unsigned long ghcb_pa,
+				  struct pt_regs *regs, struct insn *insn)
+{
+	int ret = -EINVAL;
+
+#ifdef CONFIG_AMD_MEM_ENCRYPT
+	ghcb->save.rip = regs->ip;
+
+	ghcb->save.rax = regs->ax;
+	ghcb_reg_set_valid(ghcb, VMSA_REG_RAX);
+	ghcb->save.rbx = regs->bx;
+	ghcb_reg_set_valid(ghcb, VMSA_REG_RBX);
+	ghcb->save.rcx = regs->cx;
+	ghcb_reg_set_valid(ghcb, VMSA_REG_RCX);
+	ghcb->save.rdx = regs->dx;
+	ghcb_reg_set_valid(ghcb, VMSA_REG_RDX);
+	ghcb->save.rsi = regs->si;
+	ghcb_reg_set_valid(ghcb, VMSA_REG_RSI);
+	ghcb->save.rdi = regs->di;
+	ghcb_reg_set_valid(ghcb, VMSA_REG_RDI);
+	ghcb->save.rbp = regs->bp;
+	ghcb_reg_set_valid(ghcb, VMSA_REG_RBP);
+	ghcb->save.cpl = (u8)(regs->cs & 0x3);
+	ghcb_reg_set_valid(ghcb, VMSA_REG_CPL);
+
+	ret = vmg_exit(ghcb, SVM_EXIT_VMMCALL, 0, 0);
+	if (ret)
+		return ret;
+
+	if (!ghcb_reg_is_valid(ghcb, VMSA_REG_RAX)) {
+		vmg_exit(ghcb, SVM_VMGEXIT_UNSUPPORTED_EVENT, SVM_EXIT_VMMCALL, 0);
+		BUG();
+	}
+	regs->ax = ghcb->save.rax;
+	regs->bx = ghcb->save.rbx;
+	regs->cx = ghcb->save.rcx;
+	regs->dx = ghcb->save.rdx;
+	regs->si = ghcb->save.rsi;
+	regs->di = ghcb->save.rdi;
+	regs->bp = ghcb->save.rbp;
+#endif
+
+	return ret;
 }
 
 const __initconst struct hypervisor_x86 x86_hyper_vmware = {
@@ -211,4 +288,5 @@ const __initconst struct hypervisor_x86 x86_hyper_vmware = {
 	.type			= X86_HYPER_VMWARE,
 	.init.init_platform	= vmware_platform_setup,
 	.init.x2apic_available	= vmware_legacy_x2apic_available,
+	.runtime.sev_es_hypercall = vmware_sev_es_hypercall,
 };
