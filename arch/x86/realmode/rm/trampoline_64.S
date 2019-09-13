@@ -40,7 +40,9 @@
 	.balign	PAGE_SIZE
 ENTRY(trampoline_start)
 	cli			# We should be safe anyway
+#ifndef CONFIG_AMD_SEV_ES_GUEST
 	wbinvd
+#endif
 
 	LJMPW_RM(1f)
 1:
@@ -55,9 +57,11 @@ ENTRY(trampoline_start)
 	# Setup stack
 	movl	$rm_stack_end, %esp
 
+#ifndef CONFIG_AMD_SEV_ES_GUEST
 	call	verify_cpu		# Verify the cpu supports long mode
 	testl   %eax, %eax		# Check for return code
 	jnz	no_longmode
+#endif
 
 	/*
 	 * GDT tables in non default location kernel can be beyond 16MB and
