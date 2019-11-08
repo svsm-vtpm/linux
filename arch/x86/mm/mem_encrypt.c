@@ -41,7 +41,7 @@ EXPORT_SYMBOL(sme_me_mask);
 DEFINE_STATIC_KEY_FALSE(sev_enable_key);
 EXPORT_SYMBOL_GPL(sev_enable_key);
 
-bool sev_enabled __section(.data);
+enum sme_me_status_bits sme_me_status __section(.data);
 
 /* Buffer used for early in-place encryption by BSP, no locking needed */
 static char sme_early_buffer[PAGE_SIZE] __aligned(PAGE_SIZE);
@@ -337,13 +337,13 @@ int __init early_set_memory_encrypted(unsigned long vaddr, unsigned long size)
  */
 bool sme_active(void)
 {
-	return sme_me_mask && !sev_enabled;
+	return sme_me_status & SME_ACTIVE;
 }
 EXPORT_SYMBOL(sme_active);
 
 bool sev_active(void)
 {
-	return sme_me_mask && sev_enabled;
+	return sme_me_status & SEV_ACTIVE;
 }
 EXPORT_SYMBOL(sev_active);
 
