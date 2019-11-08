@@ -63,6 +63,9 @@ static const __initconst struct idt_data early_idts[] = {
 #ifdef CONFIG_X86_32
 	INTG(X86_TRAP_PF,		page_fault),
 #endif
+#ifdef CONFIG_AMD_MEM_ENCRYPT
+	INTG(X86_TRAP_VC,		vmm_communication),
+#endif
 };
 
 /*
@@ -96,6 +99,10 @@ static const __initconst struct idt_data def_idts[] = {
 
 #ifdef CONFIG_X86_MCE
 	INTG(X86_TRAP_MC,		&machine_check),
+#endif
+
+#ifdef CONFIG_AMD_MEM_ENCRYPT
+	INTG(X86_TRAP_VC,		vmm_communication),
 #endif
 
 	SYSG(X86_TRAP_OF,		overflow),
