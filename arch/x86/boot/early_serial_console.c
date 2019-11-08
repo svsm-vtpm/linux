@@ -23,6 +23,7 @@
 
 #define DEFAULT_BAUD 9600
 
+#ifndef CONFIG_AMD_SEV_ES_GUEST
 static void early_serial_init(int port, int baud)
 {
 	unsigned char c;
@@ -152,3 +153,9 @@ void console_init(void)
 	if (!early_serial_base)
 		parse_console_uart8250();
 }
+#else
+
+void console_init(void)
+{
+}
+#endif
