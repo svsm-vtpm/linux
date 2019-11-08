@@ -18,6 +18,7 @@
 #define pr_fmt(fmt) "SVM: " fmt
 
 #include <linux/kvm_host.h>
+#include <asm/svm.h>
 
 #include "irq.h"
 #include "mmu.h"
@@ -120,66 +121,7 @@ MODULE_DEVICE_TABLE(x86cpu, svm_cpu_id);
 
 static bool erratum_383_found __read_mostly;
 
-static const u32 host_save_user_msrs[] = {
-#ifdef CONFIG_X86_64
-	MSR_STAR, MSR_LSTAR, MSR_CSTAR, MSR_SYSCALL_MASK, MSR_KERNEL_GS_BASE,
-	MSR_FS_BASE,
-#endif
-	MSR_IA32_SYSENTER_CS, MSR_IA32_SYSENTER_ESP, MSR_IA32_SYSENTER_EIP,
-	MSR_TSC_AUX,
-};
-
-#define NR_HOST_SAVE_USER_MSRS ARRAY_SIZE(host_save_user_msrs)
-
-struct kvm_sev_info {
-	bool active;		/* SEV enabled guest */
-	bool es_active;		/* SEV-ES enabled guest */
-	unsigned int asid;	/* ASID used for this guest */
-	unsigned int handle;	/* SEV firmware handle */
-	int fd;			/* SEV device fd */
-	unsigned long pages_locked; /* Number of pages locked */
-	struct list_head regions_list;  /* List of registered regions */
-};
-
-struct kvm_svm {
-	struct kvm kvm;
-
-	/* Struct members for AVIC */
-	u32 avic_vm_id;
-	struct page *avic_logical_id_table_page;
-	struct page *avic_physical_id_table_page;
-	struct hlist_node hnode;
-
-	struct kvm_sev_info sev_info;
-};
-
 struct kvm_vcpu;
-
-struct nested_state {
-	struct vmcb *hsave;
-	u64 hsave_msr;
-	u64 vm_cr_msr;
-	u64 vmcb;
-
-	/* These are the merged vectors */
-	u32 *msrpm;
-
-	/* gpa pointers to the real vectors */
-	u64 vmcb_msrpm;
-	u64 vmcb_iopm;
-
-	/* A VMEXIT is required but not yet emulated */
-	bool exit_required;
-
-	/* cache for intercepts of the guest */
-	u32 intercept_cr;
-	u32 intercept_dr;
-	u32 intercept_exceptions;
-	u64 intercept;
-
-	/* Nested Paging related state */
-	u64 nested_cr3;
-};
 
 #define MSRPM_OFFSETS	16
 static u32 msrpm_offsets[MSRPM_OFFSETS] __read_mostly;
@@ -189,70 +131,6 @@ static u32 msrpm_offsets[MSRPM_OFFSETS] __read_mostly;
  * are published and we know what the new status bits are
  */
 static uint64_t osvw_len = 4, osvw_status;
-
-struct vcpu_svm {
-	struct kvm_vcpu vcpu;
-	struct vmcb *vmcb;
-	unsigned long vmcb_pa;
-	struct svm_cpu_data *svm_data;
-	uint64_t asid_generation;
-	uint64_t sysenter_esp;
-	uint64_t sysenter_eip;
-	uint64_t tsc_aux;
-
-	u64 msr_decfg;
-
-	u64 next_rip;
-
-	u64 host_user_msrs[NR_HOST_SAVE_USER_MSRS];
-	struct {
-		u16 fs;
-		u16 gs;
-		u16 ldt;
-		u64 gs_base;
-	} host;
-
-	u64 spec_ctrl;
-	/*
-	 * Contains guest-controlled bits of VIRT_SPEC_CTRL, which will be
-	 * translated into the appropriate L2_CFG bits on the host to
-	 * perform speculative control.
-	 */
-	u64 virt_spec_ctrl;
-
-	u32 *msrpm;
-
-	ulong nmi_iret_rip;
-
-	struct nested_state nested;
-
-	bool nmi_singlestep;
-	u64 nmi_singlestep_guest_rflags;
-
-	unsigned int3_injected;
-	unsigned long int3_rip;
-
-	/* cached guest cpuid flags for faster access */
-	bool nrips_enabled	: 1;
-
-	u32 ldr_reg;
-	u32 dfr_reg;
-	struct page *avic_backing_page;
-	u64 *avic_physical_id_cache;
-	bool avic_is_running;
-
-	/*
-	 * Per-vcpu list of struct amd_svm_iommu_ir:
-	 * This is used mainly to store interrupt remapping information used
-	 * when update the vcpu affinity. This avoids the need to scan for
-	 * IRTE and try to match ga_tag in the IOMMU driver.
-	 */
-	struct list_head ir_list;
-	spinlock_t ir_list_lock;
-
-	/* which host CPU was used for running this vcpu */
-	unsigned int last_cpu;
-};
 
 /*
  * This is a wrapper of struct amd_iommu_ir_data.
@@ -423,126 +301,10 @@ enum {
 static unsigned int max_sev_asid;
 static unsigned int min_sev_asid;
 static unsigned long *sev_asid_bitmap;
-#define __sme_page_pa(x) __sme_set(page_to_pfn(x) << PAGE_SHIFT)
-
-struct enc_region {
-	struct list_head list;
-	unsigned long npages;
-	struct page **pages;
-	unsigned long uaddr;
-	unsigned long size;
-};
-
-
-static inline struct kvm_svm *to_kvm_svm(struct kvm *kvm)
-{
-	return container_of(kvm, struct kvm_svm, kvm);
-}
 
 static inline bool svm_sev_enabled(void)
 {
 	return IS_ENABLED(CONFIG_KVM_AMD_SEV) ? max_sev_asid : 0;
-}
-
-static inline bool sev_guest(struct kvm *kvm)
-{
-#ifdef CONFIG_KVM_AMD_SEV
-	struct kvm_sev_info *sev = &to_kvm_svm(kvm)->sev_info;
-
-	return sev->active;
-#else
-	return false;
-#endif
-}
-
-static inline bool sev_es_guest(struct kvm *kvm)
-{
-#ifdef CONFIG_KVM_AMD_SEV
-	struct kvm_sev_info *sev = &to_kvm_svm(kvm)->sev_info;
-
-	return sev_guest(kvm) && sev->es_active;
-#else
-	return false;
-#endif
-}
-
-static inline int sev_get_asid(struct kvm *kvm)
-{
-	struct kvm_sev_info *sev = &to_kvm_svm(kvm)->sev_info;
-
-	return sev->asid;
-}
-
-static inline struct vmcb_save_area *get_vmsa(struct vcpu_svm *svm)
-{
-	return &svm->vmcb->save;
-}
-
-static inline struct vmcb_seg *vmsa_seg_read(struct vcpu_svm *svm,
-					     enum vmsa_seg seg)
-{
-	struct vmcb_seg *save = (struct vmcb_seg *)get_vmsa(svm);
-
-	return &save[seg];
-}
-
-static inline void vmsa_seg_write(struct vcpu_svm *svm, enum vmsa_seg seg,
-				  struct vmcb_seg *val)
-{
-	struct vmcb_seg *save = (struct vmcb_seg *)get_vmsa(svm);
-
-	save[seg] = *val;
-}
-
-#define vmsa_seg_read_selector(_svm, _seg)		vmsa_seg_read(_svm, _seg)->selector
-#define vmsa_seg_read_attrib(_svm, _seg)		vmsa_seg_read(_svm, _seg)->attrib
-#define vmsa_seg_read_limit(_svm, _seg)			vmsa_seg_read(_svm, _seg)->limit
-#define vmsa_seg_read_base(_svm, _seg)			vmsa_seg_read(_svm, _seg)->base
-
-#define vmsa_seg_write_selector(_svm, _seg, _val)	vmsa_seg_read(_svm, _seg)->selector = _val
-#define vmsa_seg_write_attrib(_svm, _seg, _val)		vmsa_seg_read(_svm, _seg)->attrib = _val
-#define vmsa_seg_write_limit(_svm, _seg, _val)		vmsa_seg_read(_svm, _seg)->limit = _val
-#define vmsa_seg_write_base(_svm, _seg, _val)		vmsa_seg_read(_svm, _seg)->base = _val
-
-static inline u64 vmsa_reg_read(struct vcpu_svm *svm, enum vmsa_reg reg)
-{
-	u64 *save = (u64 *)get_vmsa(svm);
-
-	return save[reg];
-}
-
-static inline void vmsa_reg_write(struct vcpu_svm *svm, enum vmsa_reg reg,
-				  u64 val)
-{
-	u64 *save = (u64 *)get_vmsa(svm);
-
-	save[reg] = val;
-}
-
-static inline void vmsa_reg_and(struct vcpu_svm *svm, enum vmsa_reg reg,
-				u64 val)
-{
-	u64 *save = (u64 *)get_vmsa(svm);
-
-	save[reg] &= val;
-}
-
-static inline void vmsa_reg_or(struct vcpu_svm *svm, enum vmsa_reg reg,
-			       u64 val)
-{
-	u64 *save = (u64 *)get_vmsa(svm);
-
-	save[reg] |= val;
-}
-
-static inline u8 vmsa_cpl_read(struct vcpu_svm *svm)
-{
-	return get_vmsa(svm)->cpl;
-}
-
-static inline void vmsa_cpl_write(struct vcpu_svm *svm, u8 val)
-{
-	get_vmsa(svm)->cpl = val;
 }
 
 static inline void mark_all_dirty(struct vmcb *vmcb)
