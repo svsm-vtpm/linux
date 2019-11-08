@@ -133,6 +133,7 @@ static const u32 host_save_user_msrs[] = {
 
 struct kvm_sev_info {
 	bool active;		/* SEV enabled guest */
+	bool es_active;		/* SEV-ES enabled guest */
 	unsigned int asid;	/* ASID used for this guest */
 	unsigned int handle;	/* SEV firmware handle */
 	int fd;			/* SEV device fd */
@@ -379,6 +380,9 @@ module_param(vgif, int, 0444);
 static int sev = IS_ENABLED(CONFIG_AMD_MEM_ENCRYPT_ACTIVE_BY_DEFAULT);
 module_param(sev, int, 0444);
 
+/* SEV-ES support indicator */
+static int sev_es;
+
 static u8 rsm_ins_bytes[] = "\x0f\xaa";
 
 static void svm_set_cr0(struct kvm_vcpu *vcpu, unsigned long cr0);
@@ -446,6 +450,17 @@ static inline bool sev_guest(struct kvm *kvm)
 	struct kvm_sev_info *sev = &to_kvm_svm(kvm)->sev_info;
 
 	return sev->active;
+#else
+	return false;
+#endif
+}
+
+static inline bool sev_es_guest(struct kvm *kvm)
+{
+#ifdef CONFIG_KVM_AMD_SEV
+	struct kvm_sev_info *sev = &to_kvm_svm(kvm)->sev_info;
+
+	return sev_guest(kvm) && sev->es_active;
 #else
 	return false;
 #endif
@@ -1213,28 +1228,42 @@ static int avic_ga_log_notifier(u32 ga_tag)
 	return 0;
 }
 
-static __init int sev_hardware_setup(void)
+static __init void sev_hardware_setup(void)
 {
-	struct sev_user_data_status *status;
+	struct sev_user_data_status *status = NULL;
+	unsigned int eax, ebx, ecx, edx;
 	int rc;
 
-	/* Maximum number of encrypted guests supported simultaneously */
-	max_sev_asid = cpuid_ecx(0x8000001F);
+	/* SEV-ES is dependent upon SEV, so initial values are the same */
+	sev_es = true;
 
+	/* Is SEV support enabled in KVM? */
+	if (!IS_ENABLED(CONFIG_KVM_AMD_SEV))
+		goto no_sev;
+
+	/* Does the CPU support SEV? */
+	if (!boot_cpu_has(X86_FEATURE_SEV))
+		goto no_sev;
+
+	/* Retrieve SEV CPUID information */
+	cpuid(0x8000001f, &eax, &ebx, &ecx, &edx);
+
+	/* Maximum number of encrypted guests supported simultaneously */
+	max_sev_asid = ecx;
 	if (!max_sev_asid)
-		return 1;
+		goto no_sev;
 
 	/* Minimum ASID value that should be used for SEV guest */
-	min_sev_asid = cpuid_edx(0x8000001F);
+	min_sev_asid = edx;
 
 	/* Initialize SEV ASID bitmap */
 	sev_asid_bitmap = bitmap_zalloc(max_sev_asid, GFP_KERNEL);
 	if (!sev_asid_bitmap)
-		return 1;
+		goto no_sev;
 
 	status = kmalloc(sizeof(*status), GFP_KERNEL);
 	if (!status)
-		return 1;
+		goto no_sev;
 
 	/*
 	 * Check SEV platform status.
@@ -1245,13 +1274,38 @@ static __init int sev_hardware_setup(void)
 	 */
 	rc = sev_platform_status(status, NULL);
 	if (rc)
-		goto err;
+		goto no_sev;
 
-	pr_info("SEV supported\n");
+	pr_info("SEV supported: %u ASIDs\n", max_sev_asid - min_sev_asid + 1);
 
-err:
+	/*
+	 * Check for SEV-ES support.
+	 */
+
+	/* Does the CPU support SEV-ES? */
+	if (!boot_cpu_has(X86_FEATURE_SEV_ES))
+		goto no_sev_es;
+
+	/* Is SEV-ES supported by the SEV firmware? */
+	if (!(status->flags & SEV_STATUS_FLAGS_CONFIG_ES))
+		goto no_sev_es;
+
+	/* Has the system been allocated ASIDs for SEV-ES? */
+	if (min_sev_asid == 1)
+		goto no_sev_es;
+
+	pr_info("SEV-ES supported: %u ASIDs\n", min_sev_asid - 1);
+
+	goto out;
+
+no_sev:
+	sev = false;
+
+no_sev_es:
+	sev_es = false;
+
+out:
 	kfree(status);
-	return rc;
 }
 
 static void grow_ple_window(struct kvm_vcpu *vcpu)
@@ -1333,16 +1387,8 @@ static __init int svm_hardware_setup(void)
 		kvm_enable_efer_bits(EFER_SVME | EFER_LMSLE);
 	}
 
-	if (sev) {
-		if (boot_cpu_has(X86_FEATURE_SEV) &&
-		    IS_ENABLED(CONFIG_KVM_AMD_SEV)) {
-			r = sev_hardware_setup();
-			if (r)
-				sev = false;
-		} else {
-			sev = false;
-		}
-	}
+	if (sev)
+		sev_hardware_setup();
 
 	for_each_possible_cpu(cpu) {
 		r = svm_cpu_init(cpu);
