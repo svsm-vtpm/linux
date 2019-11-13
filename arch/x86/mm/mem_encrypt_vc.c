@@ -881,6 +881,9 @@ static int sev_es_vc_exception(struct pt_regs *regs, long error_code)
 	flags = vc_start(ghcb);
 
 	switch (error_code) {
+	case SVM_EXIT_EXCP_BASE + X86_TRAP_DB:
+		ret = vmg_exit(ghcb, SVM_VMGEXIT_NMI_COMPLETE, 0, 0);
+		break;
 	case SVM_EXIT_READ_DR7:
 		nae_exit = vmg_dr7_read;
 		break;
