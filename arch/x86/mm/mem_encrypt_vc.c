@@ -22,6 +22,7 @@
 #include <asm/msr-index.h>
 #include <asm/traps.h>
 #include <asm/insn.h>
+#include <asm/fpu/internal.h>
 
 typedef int (*vmg_nae_exit_t)(struct ghcb *ghcb, unsigned long ghcb_pa,
 			      struct pt_regs *regs, struct insn *insn);
@@ -246,6 +247,41 @@ static void vmg_insn_init(struct insn *insn, char *insn_buffer,
 	 *   If insn->immediate.got is not set after insn_get_length() then
 	 *   the parsing failed at some point.
 	 */
+}
+
+static int vmg_cpuid(struct ghcb *ghcb, unsigned long ghcb_pa,
+		     struct pt_regs *regs, struct insn *insn)
+{
+	int ret;
+
+	ghcb->save.rax = regs->ax;
+	ghcb_reg_set_valid(ghcb, VMSA_REG_RAX);
+	ghcb->save.rcx = regs->cx;
+	ghcb_reg_set_valid(ghcb, VMSA_REG_RCX);
+	if (regs->ax == 0x0000000d) {
+		ghcb->save.xcr0 = (__read_cr4() & X86_CR4_OSXSAVE)
+			? xgetbv(0) : 1;
+		ghcb_reg_set_valid(ghcb, VMSA_REG_XCR0);
+	}
+
+	ret = vmg_exit(ghcb, SVM_EXIT_CPUID, 0, 0);
+	if (ret)
+		return ret;
+
+	if (!ghcb_reg_is_valid(ghcb, VMSA_REG_RAX) ||
+	    !ghcb_reg_is_valid(ghcb, VMSA_REG_RBX) ||
+	    !ghcb_reg_is_valid(ghcb, VMSA_REG_RCX) ||
+	    !ghcb_reg_is_valid(ghcb, VMSA_REG_RDX)) {
+		vmg_exit(ghcb, SVM_VMGEXIT_UNSUPPORTED_EVENT,
+			 SVM_EXIT_CPUID, 0);
+		return -EINVAL;
+	}
+	regs->ax = ghcb->save.rax;
+	regs->bx = ghcb->save.rbx;
+	regs->cx = ghcb->save.rcx;
+	regs->dx = ghcb->save.rdx;
+
+	return 0;
 }
 
 #define IOIO_TYPE_STR	BIT(2)
@@ -594,6 +630,9 @@ static int sev_es_vc_exception(struct pt_regs *regs, long error_code)
 	flags = vc_start(ghcb);
 
 	switch (error_code) {
+	case SVM_EXIT_CPUID:
+		nae_exit = vmg_cpuid;
+		break;
 	case SVM_EXIT_IOIO:
 		nae_exit = vmg_ioio;
 		break;
