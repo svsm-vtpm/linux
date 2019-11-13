@@ -24,10 +24,14 @@
 #include <asm/insn.h>
 #include <asm/fpu/internal.h>
 
+#define DR7_RESET_VALUE	0x400
+
 typedef int (*vmg_nae_exit_t)(struct ghcb *ghcb, unsigned long ghcb_pa,
 			      struct pt_regs *regs, struct insn *insn);
 
 static DEFINE_PER_CPU_DECRYPTED(struct ghcb, ghcb_page) __aligned(PAGE_SIZE);
+
+static DEFINE_PER_CPU(unsigned long, cached_dr7) = DR7_RESET_VALUE;
 
 static struct ghcb *early_ghcb_va;
 
@@ -247,6 +251,49 @@ static void vmg_insn_init(struct insn *insn, char *insn_buffer,
 	 *   If insn->immediate.got is not set after insn_get_length() then
 	 *   the parsing failed at some point.
 	 */
+}
+
+static int vmg_dr7_read(struct ghcb *ghcb, unsigned long ghcb_pa,
+			struct pt_regs *regs, struct insn *insn)
+{
+	unsigned long *reg;
+	u8 rm;
+
+	/* MOV DRn always treats MOD == 3 no matter how encoded */
+	rm = X86_MODRM_RM(insn->modrm.value);
+	if (insn->rex_prefix.nbytes && X86_REX_B(insn->rex_prefix.value))
+		rm |= 0x8;
+	reg = (unsigned long *)vmg_reg_idx_to_pt_reg(regs, rm);
+
+	*reg = this_cpu_read(cached_dr7);
+
+	return 0;
+}
+
+static int vmg_dr7_write(struct ghcb *ghcb, unsigned long ghcb_pa,
+			 struct pt_regs *regs, struct insn *insn)
+{
+	unsigned long *reg;
+	int ret;
+	u8 rm;
+
+	/* MOV DRn always treats MOD == 3 no matter how encoded */
+	rm = X86_MODRM_RM(insn->modrm.value);
+	if (insn->rex_prefix.nbytes && X86_REX_B(insn->rex_prefix.value))
+		rm |= 0x8;
+	reg = (unsigned long *)vmg_reg_idx_to_pt_reg(regs, rm);
+
+	/* Using a value of 0 for ExitInfo1 means RAX holds the value */
+	ghcb->save.rax = *reg;
+	ghcb_reg_set_valid(ghcb, VMSA_REG_RAX);
+
+	ret = vmg_exit(ghcb, SVM_EXIT_WRITE_DR7, 0, 0);
+	if (ret)
+		return ret;
+
+	this_cpu_write(cached_dr7, *reg);
+
+	return 0;
 }
 
 static int vmg_cpuid(struct ghcb *ghcb, unsigned long ghcb_pa,
@@ -678,6 +725,12 @@ static int sev_es_vc_exception(struct pt_regs *regs, long error_code)
 	flags = vc_start(ghcb);
 
 	switch (error_code) {
+	case SVM_EXIT_READ_DR7:
+		nae_exit = vmg_dr7_read;
+		break;
+	case SVM_EXIT_WRITE_DR7:
+		nae_exit = vmg_dr7_write;
+		break;
 	case SVM_EXIT_CPUID:
 		nae_exit = vmg_cpuid;
 		break;
