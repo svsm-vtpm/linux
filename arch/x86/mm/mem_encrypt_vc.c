@@ -698,6 +698,17 @@ static int vmg_monitor(struct ghcb *ghcb, unsigned long ghcb_pa,
 	return vmg_exit(ghcb, SVM_EXIT_MONITOR, 0, 0);
 }
 
+static int vmg_mwait(struct ghcb *ghcb, unsigned long ghcb_pa,
+		     struct pt_regs *regs, struct insn *insn)
+{
+	ghcb->save.rax = regs->ax;
+	ghcb_reg_set_valid(ghcb, VMSA_REG_RAX);
+	ghcb->save.rcx = regs->cx;
+	ghcb_reg_set_valid(ghcb, VMSA_REG_RCX);
+
+	return vmg_exit(ghcb, SVM_EXIT_MWAIT, 0, 0);
+}
+
 static int vmg_mmio_exec(struct ghcb *ghcb, unsigned long ghcb_pa,
 			 struct pt_regs *regs, struct insn *insn,
 			 unsigned int bytes, bool read)
@@ -901,6 +912,9 @@ static int sev_es_vc_exception(struct pt_regs *regs, long error_code)
 		break;
 	case SVM_EXIT_MONITOR:
 		nae_exit = vmg_monitor;
+		break;
+	case SVM_EXIT_MWAIT:
+		nae_exit = vmg_mwait;
 		break;
 	case SVM_EXIT_NPF:
 		nae_exit = vmg_mmio;
