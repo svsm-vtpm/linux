@@ -602,6 +602,30 @@ static int vmg_msr(struct ghcb *ghcb, unsigned long ghcb_pa,
 	return 0;
 }
 
+static int vmg_vmmcall(struct ghcb *ghcb, unsigned long ghcb_pa,
+		       struct pt_regs *regs, struct insn *insn)
+{
+	int ret;
+
+	ghcb->save.rax = regs->ax;
+	ghcb_reg_set_valid(ghcb, VMSA_REG_RAX);
+	ghcb->save.cpl = (u8)(regs->cs & 0x3);
+	ghcb_reg_set_valid(ghcb, VMSA_REG_CPL);
+
+	ret = vmg_exit(ghcb, SVM_EXIT_VMMCALL, 0, 0);
+	if (ret)
+		return ret;
+
+	if (!ghcb_reg_is_valid(ghcb, VMSA_REG_RAX)) {
+		vmg_exit(ghcb, SVM_VMGEXIT_UNSUPPORTED_EVENT,
+			 SVM_EXIT_VMMCALL, 0);
+		return -EINVAL;
+	}
+	regs->ax = ghcb->save.rax;
+
+	return 0;
+}
+
 static int vmg_wbinvd(struct ghcb *ghcb, unsigned long ghcb_pa,
 		      struct pt_regs *regs, struct insn *insn)
 {
@@ -799,6 +823,9 @@ static int sev_es_vc_exception(struct pt_regs *regs, long error_code)
 		break;
 	case SVM_EXIT_MSR:
 		nae_exit = vmg_msr;
+		break;
+	case SVM_EXIT_VMMCALL:
+		nae_exit = vmg_vmmcall;
 		break;
 	case SVM_EXIT_WBINVD:
 		nae_exit = vmg_wbinvd;
