@@ -46,8 +46,8 @@ static void vmg_exception(unsigned int excp)
 	}
 }
 
-static int vmg_exit(struct ghcb *ghcb, u64 exit_code,
-		    u64 exit_info_1, u64 exit_info_2)
+int vmg_exit(struct ghcb *ghcb, u64 exit_code,
+	     u64 exit_info_1, u64 exit_info_2)
 {
 	unsigned int action, reason;
 
@@ -606,6 +606,10 @@ static int vmg_vmmcall(struct ghcb *ghcb, unsigned long ghcb_pa,
 		       struct pt_regs *regs, struct insn *insn)
 {
 	int ret;
+
+	if (x86_platform.hyper.sev_es_hypercall)
+		return x86_platform.hyper.sev_es_hypercall(ghcb, ghcb_pa,
+							   regs, insn);
 
 	ghcb->save.rax = regs->ax;
 	ghcb_reg_set_valid(ghcb, VMSA_REG_RAX);
