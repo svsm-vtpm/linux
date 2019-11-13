@@ -137,6 +137,21 @@ static phys_addr_t vmg_slow_virt_to_phys(struct ghcb *ghcb, long vaddr)
 	return pa;
 }
 
+static bool vmg_insn_repmode(struct insn *insn)
+{
+	unsigned int i;
+
+	for (i = 0; i < insn->prefixes.nbytes; i++) {
+		switch (insn->prefixes.bytes[i]) {
+		case 0xf2:
+		case 0xf3:
+			return true;
+		}
+	}
+
+	return false;
+}
+
 static long vmg_insn_rmdata(struct insn *insn, struct pt_regs *regs)
 {
 	long effective_addr;
@@ -231,6 +246,184 @@ static void vmg_insn_init(struct insn *insn, char *insn_buffer,
 	 *   If insn->immediate.got is not set after insn_get_length() then
 	 *   the parsing failed at some point.
 	 */
+}
+
+#define IOIO_TYPE_STR	BIT(2)
+#define IOIO_TYPE_IN	1
+#define IOIO_TYPE_INS	(IOIO_TYPE_IN | IOIO_TYPE_STR)
+#define IOIO_TYPE_OUT	0
+#define IOIO_TYPE_OUTS	(IOIO_TYPE_OUT | IOIO_TYPE_STR)
+
+#define IOIO_REP	BIT(3)
+
+#define IOIO_ADDR_64	BIT(9)
+#define IOIO_ADDR_32	BIT(8)
+#define IOIO_ADDR_16	BIT(7)
+
+#define IOIO_DATA_32	BIT(6)
+#define IOIO_DATA_16	BIT(5)
+#define IOIO_DATA_8	BIT(4)
+
+#define IOIO_SEG_ES	(0 << 10)
+#define IOIO_SEG_DS	(3 << 10)
+
+static u32 vmg_ioio_exitinfo(struct insn *insn, struct pt_regs *regs)
+{
+	u32 exitinfo = 0;
+
+	switch (insn->opcode.bytes[0]) {
+	/* INS opcodes */
+	case 0x6c:
+	case 0x6d:
+		exitinfo |= IOIO_TYPE_INS;
+		exitinfo |= IOIO_SEG_ES;
+		exitinfo |= (regs->dx & 0xffff) << 16;
+		break;
+
+	/* OUTS opcodes */
+	case 0x6e:
+	case 0x6f:
+		exitinfo |= IOIO_TYPE_OUTS;
+		exitinfo |= IOIO_SEG_DS;
+		exitinfo |= (regs->dx & 0xffff) << 16;
+		break;
+
+	/* IN immediate opcodes */
+	case 0xe4:
+	case 0xe5:
+		exitinfo |= IOIO_TYPE_IN;
+		exitinfo |= insn->immediate.value << 16;
+		break;
+
+	/* OUT immediate opcodes */
+	case 0xe6:
+	case 0xe7:
+		exitinfo |= IOIO_TYPE_OUT;
+		exitinfo |= insn->immediate.value << 16;
+		break;
+
+	/* IN register opcodes */
+	case 0xec:
+	case 0xed:
+		exitinfo |= IOIO_TYPE_IN;
+		exitinfo |= (regs->dx & 0xffff) << 16;
+		break;
+
+	/* OUT register opcodes */
+	case 0xee:
+	case 0xef:
+		exitinfo |= IOIO_TYPE_OUT;
+		exitinfo |= (regs->dx & 0xffff) << 16;
+		break;
+
+	default:
+		return 0;
+	}
+
+	switch (insn->opcode.bytes[0]) {
+	case 0x6c:
+	case 0x6e:
+	case 0xe4:
+	case 0xe6:
+	case 0xec:
+	case 0xee:
+		/* Single byte opcodes */
+		exitinfo |= IOIO_DATA_8;
+		break;
+	default:
+		/* Length determined by instruction parsing */
+		exitinfo |= (insn->opnd_bytes == 2) ? IOIO_DATA_16
+						    : IOIO_DATA_32;
+	}
+
+	switch (insn->addr_bytes) {
+	case 2: exitinfo |= IOIO_ADDR_16; break;
+	case 4: exitinfo |= IOIO_ADDR_32; break;
+	case 8: exitinfo |= IOIO_ADDR_64; break;
+	}
+
+	if (vmg_insn_repmode(insn))
+		exitinfo |= IOIO_REP;
+
+	return exitinfo;
+}
+
+static int vmg_ioio(struct ghcb *ghcb, unsigned long ghcb_pa,
+		    struct pt_regs *regs, struct insn *insn)
+{
+	u64 exit_info_1, exit_info_2;
+	int ret;
+
+	exit_info_1 = vmg_ioio_exitinfo(insn, regs);
+	if (!exit_info_1) {
+		/* Not a valid IOIO operation */
+		vmg_exit(ghcb, SVM_VMGEXIT_UNSUPPORTED_EVENT, SVM_EXIT_IOIO, 0);
+		WARN(1, "ioio operation is not valid\n");
+		return -EINVAL;
+	}
+
+	if (!(exit_info_1 & IOIO_TYPE_IN)) {
+		ghcb->save.rax = regs->ax;
+		ghcb_reg_set_valid(ghcb, VMSA_REG_RAX);
+	}
+
+	/*
+	 * TODO: This is needed for the merging cases (size<32 bits)
+	 *       Pass in zero and perform merge here (only for non-string) to
+	 *       avoid exposing rax unnecessarily.
+	 */
+	ghcb->save.rax = regs->ax;
+	ghcb_reg_set_valid(ghcb, VMSA_REG_RAX);
+
+	if (exit_info_1 & IOIO_TYPE_STR) {
+		unsigned int io_bytes, vmg_exit_bytes;
+		unsigned int ghcb_count, op_count;
+
+		io_bytes = (exit_info_1 >> 4) & 0x7;
+		ghcb_count = sizeof(ghcb->shared_buffer) / io_bytes;
+
+		op_count = (exit_info_1 & IOIO_REP) ? regs->cx : 1;
+		while (op_count) {
+			exit_info_2 = min(op_count, ghcb_count);
+			vmg_exit_bytes = exit_info_2 * io_bytes;
+
+			if (!(exit_info_1 & IOIO_TYPE_IN)) {
+				memcpy(ghcb->shared_buffer, (void *)regs->si,
+				       vmg_exit_bytes);
+				regs->si += vmg_exit_bytes;
+			}
+
+			ghcb->save.sw_scratch = ghcb_pa + offsetof(struct ghcb, shared_buffer);
+			ret = vmg_exit(ghcb, SVM_EXIT_IOIO, exit_info_1, exit_info_2);
+			if (ret)
+				return ret;
+
+			if (exit_info_1 & IOIO_TYPE_IN) {
+				memcpy((void *)regs->di, ghcb->shared_buffer, vmg_exit_bytes);
+				regs->di += vmg_exit_bytes;
+			}
+
+			if (exit_info_1 & IOIO_REP)
+				regs->cx -= exit_info_2;
+
+			op_count -= exit_info_2;
+		}
+	} else {
+		ret = vmg_exit(ghcb, SVM_EXIT_IOIO, exit_info_1, 0);
+		if (ret)
+			return ret;
+
+		if (exit_info_1 & IOIO_TYPE_IN) {
+			if (!ghcb_reg_is_valid(ghcb, VMSA_REG_RAX)) {
+				vmg_exit(ghcb, SVM_VMGEXIT_UNSUPPORTED_EVENT,
+					 SVM_EXIT_IOIO, 0);
+				return -EINVAL;
+			}
+			regs->ax = ghcb->save.rax;
+		}
+	}
+
+	return 0;
 }
 
 static int vmg_mmio_exec(struct ghcb *ghcb, unsigned long ghcb_pa,
@@ -401,6 +594,9 @@ static int sev_es_vc_exception(struct pt_regs *regs, long error_code)
 	flags = vc_start(ghcb);
 
 	switch (error_code) {
+	case SVM_EXIT_IOIO:
+		nae_exit = vmg_ioio;
+		break;
 	case SVM_EXIT_NPF:
 		nae_exit = vmg_mmio;
 		break;
