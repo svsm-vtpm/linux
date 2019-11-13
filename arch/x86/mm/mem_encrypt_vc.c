@@ -655,6 +655,49 @@ static int vmg_wbinvd(struct ghcb *ghcb, unsigned long ghcb_pa,
 	return vmg_exit(ghcb, SVM_EXIT_WBINVD, 0, 0);
 }
 
+static int vmg_monitor(struct ghcb *ghcb, unsigned long ghcb_pa,
+		       struct pt_regs *regs, struct insn *insn)
+{
+	unsigned long monitor_pa = 0;
+	unsigned int level;
+	pgd_t *pgd;
+	pte_t *pte;
+
+	pgd = __va(read_cr3_pa());
+	pgd += pgd_index(regs->ax);
+	pte = lookup_address_in_pgd(pgd, regs->ax, &level);
+	if (pte && pte_present(*pte)) {
+		unsigned long offset;
+		phys_addr_t pa;
+
+		switch (level) {
+		case PG_LEVEL_1G:
+			pa = (phys_addr_t)pud_pfn(*(pud_t *)pte) << PAGE_SHIFT;
+			offset = regs->ax & ~PUD_PAGE_MASK;
+			break;
+		case PG_LEVEL_2M:
+			pa = (phys_addr_t)pmd_pfn(*(pmd_t *)pte) << PAGE_SHIFT;
+			offset = regs->ax & ~PMD_PAGE_MASK;
+			break;
+		default:
+			pa = (phys_addr_t)pte_pfn(*pte) << PAGE_SHIFT;
+			offset = regs->ax & ~PAGE_MASK;
+			break;
+		}
+
+		monitor_pa = pa | offset;
+	}
+
+	ghcb->save.rax = monitor_pa;
+	ghcb_reg_set_valid(ghcb, VMSA_REG_RAX);
+	ghcb->save.rcx = regs->cx;
+	ghcb_reg_set_valid(ghcb, VMSA_REG_RCX);
+	ghcb->save.rdx = regs->dx;
+	ghcb_reg_set_valid(ghcb, VMSA_REG_RDX);
+
+	return vmg_exit(ghcb, SVM_EXIT_MONITOR, 0, 0);
+}
+
 static int vmg_mmio_exec(struct ghcb *ghcb, unsigned long ghcb_pa,
 			 struct pt_regs *regs, struct insn *insn,
 			 unsigned int bytes, bool read)
@@ -855,6 +898,9 @@ static int sev_es_vc_exception(struct pt_regs *regs, long error_code)
 		break;
 	case SVM_EXIT_WBINVD:
 		nae_exit = vmg_wbinvd;
+		break;
+	case SVM_EXIT_MONITOR:
+		nae_exit = vmg_monitor;
 		break;
 	case SVM_EXIT_NPF:
 		nae_exit = vmg_mmio;
