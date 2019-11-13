@@ -376,6 +376,12 @@ static int vmg_cpuid(struct ghcb *ghcb, unsigned long ghcb_pa,
 	return 0;
 }
 
+static int vmg_invd(struct ghcb *ghcb, unsigned long ghcb_pa,
+		    struct pt_regs *regs, struct insn *insn)
+{
+	return vmg_exit(ghcb, SVM_EXIT_INVD, 0, 0);
+}
+
 #define IOIO_TYPE_STR	BIT(2)
 #define IOIO_TYPE_IN	1
 #define IOIO_TYPE_INS	(IOIO_TYPE_IN | IOIO_TYPE_STR)
@@ -784,6 +790,9 @@ static int sev_es_vc_exception(struct pt_regs *regs, long error_code)
 		break;
 	case SVM_EXIT_CPUID:
 		nae_exit = vmg_cpuid;
+		break;
+	case SVM_EXIT_INVD:
+		nae_exit = vmg_invd;
 		break;
 	case SVM_EXIT_IOIO:
 		nae_exit = vmg_ioio;
