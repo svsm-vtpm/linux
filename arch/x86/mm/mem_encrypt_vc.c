@@ -978,7 +978,9 @@ void __init early_ghcb_init(void)
 
 void __init ghcb_init(void)
 {
-	int cpu;
+	unsigned long flags;
+	struct ghcb *ghcb;
+	int cpu, ret;
 
 	if (!sev_es_active())
 		return;
@@ -998,4 +1000,17 @@ void __init ghcb_init(void)
 	native_wrmsrl(MSR_AMD64_SEV_GHCB, __pa(this_cpu_ptr(&ghcb_page)));
 
 	early_memunmap(early_ghcb_va, PAGE_SIZE);
+
+	/* Retrieve the AP Jump Table address using VMGEXIT */
+	ghcb = this_cpu_ptr(&ghcb_page);
+
+	flags = vc_start(ghcb);
+
+	ret = vmg_exit(ghcb, SVM_VMGEXIT_AP_JUMP_TABLE, 1, 0);
+	if (ret)
+		WARN(1, "error retrieving SEV-ES jump table address\n");
+
+	sev_es_ap_jump_table_pa = ghcb->save.sw_exit_info_2;
+
+	vc_finish(ghcb, flags);
 }

@@ -82,6 +82,7 @@
 #include <asm/cpu_device_id.h>
 #include <asm/spec-ctrl.h>
 #include <asm/hw_irq.h>
+#include <asm/set_memory.h>
 
 /* representing HT siblings of each logical CPU */
 DEFINE_PER_CPU_READ_MOSTLY(cpumask_var_t, cpu_sibling_map);
@@ -681,6 +682,29 @@ static void __init smp_quirk_init_udelay(void)
 	init_udelay = UDELAY_10MS_DEFAULT;
 }
 
+static int program_sev_es_jump_table(unsigned long start_eip)
+{
+	u16 *ap_jump_table;
+
+	if (!sev_es_ap_jump_table_pa)
+		return -EINVAL;
+
+	/*
+	 * The SEV-ES AP jump table is in reserved encrypted memory, so use
+	 * ioremap_encrypted() to map and then program it.
+	 */
+	ap_jump_table = ioremap_encrypted(sev_es_ap_jump_table_pa, PAGE_SIZE);
+	if (!ap_jump_table)
+		return -EIO;
+
+	ap_jump_table[0] = (u16)(start_eip & 0x0f);
+	ap_jump_table[1] = (u16)(start_eip >> 4);
+
+	iounmap(ap_jump_table);
+
+	return 0;
+}
+
 /*
  * Poke the other CPU in the eye via NMI to wake it up. Remember that the normal
  * INIT, INIT, STARTUP sequence will reset the chip hard for us, and this
@@ -774,6 +798,20 @@ wakeup_secondary_cpu_via_init(int phys_apicid, unsigned long start_eip)
 		num_starts = 2;
 	else
 		num_starts = 0;
+
+	/*
+	 * If SEV-ES is active, then program the jump table before
+	 * kicking the CPU.
+	 */
+	if (sev_es_active()) {
+		int ret;
+
+		ret = program_sev_es_jump_table(start_eip);
+		if (ret) {
+			pr_err("Unable to map SEV-ES AP jump table\n");
+			return ret;
+		}
+	}
 
 	/*
 	 * Run STARTUP IPI loop.
