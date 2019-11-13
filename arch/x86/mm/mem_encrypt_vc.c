@@ -296,6 +296,27 @@ static int vmg_dr7_write(struct ghcb *ghcb, unsigned long ghcb_pa,
 	return 0;
 }
 
+static int vmg_rdtsc(struct ghcb *ghcb, unsigned long ghcb_pa,
+		     struct pt_regs *regs, struct insn *insn)
+{
+	int ret;
+
+	ret = vmg_exit(ghcb, SVM_EXIT_RDTSC, 0, 0);
+	if (ret)
+		return ret;
+
+	if (!ghcb_reg_is_valid(ghcb, VMSA_REG_RAX) ||
+	    !ghcb_reg_is_valid(ghcb, VMSA_REG_RDX)) {
+		vmg_exit(ghcb, SVM_VMGEXIT_UNSUPPORTED_EVENT,
+			 SVM_EXIT_RDTSC, 0);
+		return -EINVAL;
+	}
+	regs->ax = ghcb->save.rax;
+	regs->dx = ghcb->save.rdx;
+
+	return 0;
+}
+
 static int vmg_cpuid(struct ghcb *ghcb, unsigned long ghcb_pa,
 		     struct pt_regs *regs, struct insn *insn)
 {
@@ -730,6 +751,9 @@ static int sev_es_vc_exception(struct pt_regs *regs, long error_code)
 		break;
 	case SVM_EXIT_WRITE_DR7:
 		nae_exit = vmg_dr7_write;
+		break;
+	case SVM_EXIT_RDTSC:
+		nae_exit = vmg_rdtsc;
 		break;
 	case SVM_EXIT_CPUID:
 		nae_exit = vmg_cpuid;
