@@ -376,6 +376,42 @@ bool force_dma_unencrypted(struct device *dev)
 	return false;
 }
 
+#define TOTAL_MEM_1G	0x40000000U
+#define TOTAL_MEM_4G	0x100000000U
+
+/*
+ * Override for SWIOTLB default size adjustment -
+ * ARCH_HAS_ADJUST_SWIOTLB_DEFAULT
+ */
+unsigned long adjust_swiotlb_default_size(unsigned long default_size)
+{
+	/*
+	 * For SEV, all DMA has to occur via shared/unencrypted pages.
+	 * SEV uses SWOTLB to make this happen without changing device
+	 * drivers. However, depending on the workload being run, the
+	 * default 64MB of SWIOTLB may not be enough & SWIOTLB may
+	 * run out of buffers for using DMA, resulting in I/O errors.
+	 * Increase the default size of SWIOTLB for SEV guests using
+	 * a minimum value of 128MB and a maximum value of 512GB,
+	 * depending on amount of provisioned guest memory.
+	 */
+	if (sev_active()) {
+		unsigned long total_mem = get_num_physpages() << PAGE_SHIFT;
+
+		if (total_mem <= TOTAL_MEM_1G)
+			default_size = default_size * 2;
+		else if (total_mem <= TOTAL_MEM_4G)
+			default_size = default_size * 4;
+		else
+			default_size = default_size * 8;
+
+		pr_info_once("SEV is active, SWIOTLB default size set to %luMB\n",
+			     default_size >> 20);
+	}
+
+	return default_size;
+}
+
 /* Architecture __weak replacement functions */
 void __init mem_encrypt_free_decrypted_mem(void)
 {

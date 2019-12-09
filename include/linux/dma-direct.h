@@ -35,6 +35,16 @@ static inline bool force_dma_unencrypted(struct device *dev)
 }
 #endif /* CONFIG_ARCH_HAS_FORCE_DMA_UNENCRYPTED */
 
+#ifdef CONFIG_ARCH_HAS_ADJUST_SWIOTLB_DEFAULT
+unsigned long adjust_swiotlb_default_size(unsigned long default_size);
+#else
+static inline unsigned long adjust_swiotlb_default_size
+		(unsigned long default_size)
+{
+	return default_size;
+}
+#endif	/* CONFIG_ARCH_HAS_ADJUST_SWIOTLB_DEFAULT */
+
 /*
  * If memory encryption is supported, phys_to_dma will set the memory encryption
  * bit in the DMA address, and dma_to_phys will clear it.  The raw __phys_to_dma

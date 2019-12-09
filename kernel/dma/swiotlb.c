@@ -155,11 +155,21 @@ void swiotlb_set_max_segment(unsigned int val)
 #define IO_TLB_DEFAULT_SIZE (64UL<<20)
 unsigned long swiotlb_size_or_default(void)
 {
+	unsigned long default_size = IO_TLB_DEFAULT_SIZE;
 	unsigned long size;
+
+	/*
+	 * If swiotlb size/amount of slabs are not defined on kernel command
+	 * line, then give a chance to architectures to adjust swiotlb
+	 * size, this may be required by some architectures such as those
+	 * supporting memory encryption.
+	 */
+	if (!io_tlb_nslabs)
+		default_size = adjust_swiotlb_default_size(default_size);
 
 	size = io_tlb_nslabs << IO_TLB_SHIFT;
 
-	return size ? size : (IO_TLB_DEFAULT_SIZE);
+	return size ? size : default_size;
 }
 
 void swiotlb_print_info(void)
@@ -245,7 +255,7 @@ int __init swiotlb_init_with_tbl(char *tlb, unsigned long nslabs, int verbose)
 void  __init
 swiotlb_init(int verbose)
 {
-	size_t default_size = IO_TLB_DEFAULT_SIZE;
+	unsigned long default_size = swiotlb_size_or_default();
 	unsigned char *vstart;
 	unsigned long bytes;
 
