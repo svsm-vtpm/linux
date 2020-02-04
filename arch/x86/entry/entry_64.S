@@ -1415,7 +1415,50 @@ ENTRY(nmi)
 	 * Return back to user mode.  We must *not* do the normal exit
 	 * work, because we don't want to enable interrupts.
 	 */
+#ifndef CONFIG_AMD_SEV_ES_GUEST
 	jmp	swapgs_restore_regs_and_return_to_usermode
+#else
+#ifdef CONFIG_DEBUG_ENTRY
+	/* Assert that pt_regs indicates user mode. */
+	testb	$3, CS(%rsp)
+	jnz	1f
+	ud2
+1:
+#endif
+	POP_REGS pop_rdi=0
+
+	/*
+	 * The stack is now user RDI, orig_ax, RIP, CS, EFLAGS, RSP, SS.
+	 * Save old stack pointer and switch to trampoline stack.
+	 */
+	movq	%rsp, %rdi
+	movq	PER_CPU_VAR(cpu_tss_rw + TSS_sp0), %rsp
+
+	/* Copy the IRET frame to the trampoline stack. */
+	pushq	6*8(%rdi)	/* SS */
+	pushq	5*8(%rdi)	/* RSP */
+	pushq	4*8(%rdi)	/* EFLAGS */
+	pushq	3*8(%rdi)	/* CS */
+	pushq	2*8(%rdi)	/* RIP */
+
+	/* Push user RDI on the trampoline stack. */
+	pushq	(%rdi)
+
+	/*
+	 * We are on the trampoline stack.  All regs except RDI are live.
+	 * We can do future final exit work right here.
+	 */
+
+	SWITCH_TO_USER_CR3_STACK scratch_reg=%rdi
+
+	/* Restore RDI. */
+	popq	%rdi
+	SWAPGS
+	pushfq
+	btsq $X86_EFLAGS_TF_BIT, (%rsp)
+	popfq
+	iretq
+#endif
 
 .Lnmi_from_kernel:
 	/*
@@ -1658,6 +1701,11 @@ nmi_restore:
 	 * cannot result in a fault.  Similarly, we don't need to worry
 	 * about espfix64 on the way back to kernel mode.
 	 */
+#ifdef CONFIG_AMD_SEV_ES_GUEST
+	pushfq
+	btsq $X86_EFLAGS_TF_BIT, (%rsp)
+	popfq
+#endif
 	iretq
 END(nmi)
 
