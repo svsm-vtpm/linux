@@ -487,6 +487,45 @@ static u64 vmg_ioio(struct ghcb *ghcb, unsigned long ghcb_pa,
 	return 0;
 }
 
+static u64 vmg_msr(struct ghcb *ghcb, unsigned long ghcb_pa,
+		   struct pt_regs *regs, struct insn *insn)
+{
+	u64 exit_info_1 = 0;
+	u64 ret;
+
+	switch (insn->opcode.bytes[1]) {
+	case 0x30:	/* WRMSR */
+		exit_info_1 = 1;
+		ghcb->save.rax = regs->ax;
+		ghcb_reg_set_valid(ghcb, VMSA_REG_RAX);
+		ghcb->save.rdx = regs->dx;
+		ghcb_reg_set_valid(ghcb, VMSA_REG_RDX);
+		/* Fallthrough */
+	case 0x32:	/* RDMSR */
+		ghcb->save.rcx = regs->cx;
+		ghcb_reg_set_valid(ghcb, VMSA_REG_RCX);
+		break;
+	default:
+		return vmg_issue_unsupported(ghcb, SVM_EXIT_MSR,
+					     insn->opcode.bytes[0]);
+	}
+
+	ret = vmg_exit(ghcb, SVM_EXIT_MSR, exit_info_1, 0);
+	if (ret)
+		return ret;
+
+	if (!exit_info_1) {
+		if (!ghcb_reg_is_valid(ghcb, VMSA_REG_RAX) ||
+		    !ghcb_reg_is_valid(ghcb, VMSA_REG_RDX))
+			return vmg_issue_unsupported(ghcb, SVM_EXIT_MSR, 1);
+
+		regs->ax = ghcb->save.rax;
+		regs->dx = ghcb->save.rdx;
+	}
+
+	return 0;
+}
+
 static u64 vmg_mmio_exec(struct ghcb *ghcb, unsigned long ghcb_pa,
 			 struct pt_regs *regs, struct insn *insn,
 			 unsigned int bytes, bool read)
@@ -661,6 +700,9 @@ static u64 sev_es_vc_exception(struct pt_regs *regs, long error_code)
 		break;
 	case SVM_EXIT_IOIO:
 		nae_exit = vmg_ioio;
+		break;
+	case SVM_EXIT_MSR:
+		nae_exit = vmg_msr;
 		break;
 	case SVM_EXIT_NPF:
 		nae_exit = vmg_mmio;
