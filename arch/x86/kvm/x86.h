@@ -347,4 +347,10 @@ static inline void kvm_after_interrupt(struct kvm_vcpu *vcpu)
 
 void kvm_load_guest_xcr0(struct kvm_vcpu *vcpu);
 void kvm_put_guest_xcr0(struct kvm_vcpu *vcpu);
+
+int sev_es_mmio_write(struct kvm_vcpu *vcpu, gpa_t src, unsigned int bytes,
+		      void *dst);
+int sev_es_mmio_read(struct kvm_vcpu *vcpu, gpa_t src, unsigned int bytes,
+		     void *dst);
+
 #endif
