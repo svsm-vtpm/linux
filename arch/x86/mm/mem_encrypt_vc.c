@@ -526,6 +526,12 @@ static u64 vmg_msr(struct ghcb *ghcb, unsigned long ghcb_pa,
 	return 0;
 }
 
+static u64 vmg_wbinvd(struct ghcb *ghcb, unsigned long ghcb_pa,
+		      struct pt_regs *regs, struct insn *insn)
+{
+	return vmg_exit(ghcb, SVM_EXIT_WBINVD, 0, 0);
+}
+
 static u64 vmg_mmio_exec(struct ghcb *ghcb, unsigned long ghcb_pa,
 			 struct pt_regs *regs, struct insn *insn,
 			 unsigned int bytes, bool read)
@@ -703,6 +709,9 @@ static u64 sev_es_vc_exception(struct pt_regs *regs, long error_code)
 		break;
 	case SVM_EXIT_MSR:
 		nae_exit = vmg_msr;
+		break;
+	case SVM_EXIT_WBINVD:
+		nae_exit = vmg_wbinvd;
 		break;
 	case SVM_EXIT_NPF:
 		nae_exit = vmg_mmio;
