@@ -36,6 +36,7 @@
 #include <asm/microcode.h>
 #include <asm/kasan.h>
 #include <asm/fixmap.h>
+#include <asm/msr-index.h>
 
 /*
  * Manage page tables very early on.
@@ -124,6 +125,10 @@ unsigned long __head __startup_64(unsigned long physaddr,
 	bool la57;
 	int i;
 	unsigned int *next_pgt_ptr;
+
+#ifdef CONFIG_AMD_SEV_ES_GUEST
+	__wrmsr(MSR_AMD64_SEV_GHCB, 0, 0);
+#endif
 
 	la57 = check_la57_support(physaddr);
 
@@ -261,6 +266,10 @@ unsigned long __head __startup_64(unsigned long physaddr,
 
 unsigned long __startup_secondary_64(void)
 {
+#ifdef CONFIG_AMD_SEV_ES_GUEST
+	__wrmsr(MSR_AMD64_SEV_GHCB, 0, 0);
+#endif
+
 	/*
 	 * Return the SME encryption mask (if SME is active) to be used as a
 	 * modifier for the initial pgdir entry programmed into CR3.
