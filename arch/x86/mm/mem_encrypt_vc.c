@@ -642,6 +642,27 @@ static u64 vmg_vmmcall(struct ghcb *ghcb, unsigned long ghcb_pa,
 	return 0;
 }
 
+static u64 vmg_rdtscp(struct ghcb *ghcb, unsigned long ghcb_pa,
+		      struct pt_regs *regs, struct insn *insn)
+{
+	u64 ret;
+
+	ret = vmg_exit(ghcb, SVM_EXIT_RDTSCP, 0, 0);
+	if (ret)
+		return ret;
+
+	if (!ghcb_reg_is_valid(ghcb, VMSA_REG_RAX) ||
+	    !ghcb_reg_is_valid(ghcb, VMSA_REG_RCX) ||
+	    !ghcb_reg_is_valid(ghcb, VMSA_REG_RDX))
+		return vmg_issue_unsupported(ghcb, SVM_EXIT_RDTSCP, 0);
+
+	regs->ax = ghcb->save.rax;
+	regs->cx = ghcb->save.rcx;
+	regs->dx = ghcb->save.rdx;
+
+	return 0;
+}
+
 static u64 vmg_wbinvd(struct ghcb *ghcb, unsigned long ghcb_pa,
 		      struct pt_regs *regs, struct insn *insn)
 {
@@ -843,6 +864,9 @@ static u64 sev_es_vc_exception(struct pt_regs *regs, long error_code)
 		break;
 	case SVM_EXIT_VMMCALL:
 		nae_exit = vmg_vmmcall;
+		break;
+	case SVM_EXIT_RDTSCP:
+		nae_exit = vmg_rdtscp;
 		break;
 	case SVM_EXIT_WBINVD:
 		nae_exit = vmg_wbinvd;
