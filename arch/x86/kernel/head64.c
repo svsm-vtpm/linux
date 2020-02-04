@@ -449,10 +449,12 @@ asmlinkage __visible void __init x86_64_start_kernel(char * real_mode_data)
 
 	copy_bootdata(__va(real_mode_data));
 
+#ifndef CONFIG_AMD_SEV_ES_GUEST
 	/*
 	 * Load microcode early on BSP.
 	 */
 	load_ucode_bsp();
+#endif
 
 	/* set init_top_pgt kernel high mapping*/
 	init_top_pgt[511] = early_top_pgt[511];
