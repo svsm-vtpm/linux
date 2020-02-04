@@ -12,6 +12,8 @@
 
 #include <linux/types.h>
 
+struct ghcb;
+
 #ifdef CONFIG_AMD_MEM_ENCRYPT
 
 extern unsigned char early_ghcb[PAGE_SIZE];
@@ -19,10 +21,26 @@ extern unsigned char early_ghcb[PAGE_SIZE];
 void __init early_ghcb_init(void);
 void __init ghcb_init(void);
 
+u64 vmg_exit(struct ghcb *ghcb, u64 exit_code,
+	     u64 exit_info_1, u64 exit_info_2);
+u64 vmg_issue_unsupported(struct ghcb *ghcb, u64 error1, u64 error2);
+
 #else
 
 void __init early_ghcb_init(void) { }
 void __init ghcb_init(void) { }
+
+static inline u64 vmg_exit(struct ghcb *ghcb, u64 exit_code,
+			   u64 exit_info_1, u64 exit_info_2)
+{
+	return -ENOTSUPP;
+}
+
+static inline u64 vmg_issue_unsupported(struct ghcb *ghcb,
+					u64 error1, u64 error2)
+{
+	return -ENOTSUPP;
+}
 
 #endif	/* CONFIG_AMD_MEM_ENCRYPT */
 

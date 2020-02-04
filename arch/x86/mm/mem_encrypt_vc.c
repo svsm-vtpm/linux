@@ -76,8 +76,8 @@ static u64 vmg_error_check(struct ghcb *ghcb)
 	}
 }
 
-static u64 vmg_exit(struct ghcb *ghcb, u64 exit_code,
-		    u64 exit_info_1, u64 exit_info_2)
+u64 vmg_exit(struct ghcb *ghcb, u64 exit_code,
+	     u64 exit_info_1, u64 exit_info_2)
 {
 	ghcb->save.sw_exit_code = exit_code;
 	ghcb->save.sw_exit_info_1 = exit_info_1;
@@ -87,6 +87,22 @@ static u64 vmg_exit(struct ghcb *ghcb, u64 exit_code,
 	asm volatile ("rep; vmmcall" ::: "memory");
 
 	return vmg_error_check(ghcb);
+}
+
+u64 vmg_issue_unsupported(struct ghcb *ghcb, u64 error1, u64 error2)
+{
+	u64 ret;
+
+	ret = vmg_exit(ghcb, SVM_VMGEXIT_UNSUPPORTED_EVENT, error1, error2);
+
+	/*
+	 * An unsupported event was issued so be sure to raise a further
+	 * exception if not instructed by the hypervisor.
+	 */
+	if (!ret)
+		ret = vmg_unsupported_event();
+
+	return ret;
 }
 
 static unsigned long vc_start(struct ghcb *ghcb)
@@ -265,22 +281,6 @@ static void vmg_insn_init(struct insn *insn, char *insn_buffer,
 	 *   If insn->immediate.got is not set after insn_get_length() then
 	 *   the parsing failed at some point.
 	 */
-}
-
-static u64 vmg_issue_unsupported(struct ghcb *ghcb, u64 error1, u64 error2)
-{
-	u64 ret;
-
-	ret = vmg_exit(ghcb, SVM_VMGEXIT_UNSUPPORTED_EVENT, error1, error2);
-
-	/*
-	 * An unsupported event was issued so be sure to raise a further
-	 * exception if not instructed by the hypervisor.
-	 */
-	if (!ret)
-		ret = vmg_unsupported_event();
-
-	return ret;
 }
 
 static u64 vmg_dr7_read(struct ghcb *ghcb, unsigned long ghcb_pa,
@@ -624,6 +624,10 @@ static u64 vmg_vmmcall(struct ghcb *ghcb, unsigned long ghcb_pa,
 		       struct pt_regs *regs, struct insn *insn)
 {
 	u64 ret;
+
+	if (x86_platform.hyper.sev_es_hypercall)
+		return x86_platform.hyper.sev_es_hypercall(ghcb, ghcb_pa,
+							   regs, insn);
 
 	ghcb->save.rax = regs->ax;
 	ghcb_reg_set_valid(ghcb, VMSA_REG_RAX);
