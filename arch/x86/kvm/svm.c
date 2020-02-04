@@ -2343,7 +2343,12 @@ static void svm_vcpu_unblocking(struct kvm_vcpu *vcpu)
 static unsigned long svm_get_rflags(struct kvm_vcpu *vcpu)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
-	unsigned long rflags = vmsa_reg_read(svm, VMSA_REG_RFLAGS);
+	unsigned long rflags;
+
+	if (vcpu->arch.vmsa_encrypted)
+		return 0;
+
+	rflags = vmsa_reg_read(svm, VMSA_REG_RFLAGS);
 
 	if (svm->nmi_singlestep) {
 		/* Hide our flags if they were not set by the guest */
@@ -2357,6 +2362,9 @@ static unsigned long svm_get_rflags(struct kvm_vcpu *vcpu)
 
 static void svm_set_rflags(struct kvm_vcpu *vcpu, unsigned long rflags)
 {
+	if (vcpu->arch.vmsa_encrypted)
+		return;
+
 	if (to_svm(vcpu)->nmi_singlestep)
 		rflags |= (X86_EFLAGS_TF | X86_EFLAGS_RF);
 
