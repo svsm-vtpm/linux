@@ -117,6 +117,7 @@
 #include <asm/microcode.h>
 #include <asm/kaslr.h>
 #include <asm/unwind.h>
+#include <asm/mem_encrypt_vc.h>
 
 /*
  * max_low_pfn_mapped: highest direct mapped pfn under 4GB
@@ -870,11 +871,17 @@ void __init setup_arch(char **cmdline_p)
 	 */
 	olpc_ofw_detect();
 
+	/*
+	 * Early SEV-ES/GHCB usage needs to map the GHCB area as un-encrypted.
+	 * This requires that early_ioremap_init() be called before calling
+	 * early_ghcb_init().
+	 */
+	early_ioremap_init();
+	early_ghcb_init();
 	idt_setup_early_traps();
 	early_cpu_init();
 	arch_init_ideal_nops();
 	jump_label_init();
-	early_ioremap_init();
 
 	setup_olpc_ofw_pgd();
 
