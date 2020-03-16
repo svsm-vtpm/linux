@@ -1484,6 +1484,7 @@ static void sev_es_init_vmcb(struct vcpu_svm *svm)
 	clr_cr_intercept(svm, INTERCEPT_CR4_READ);
 	clr_cr_intercept(svm, INTERCEPT_CR0_WRITE);
 	clr_cr_intercept(svm, INTERCEPT_CR4_WRITE);
+	clr_cr_intercept(svm, INTERCEPT_CR8_WRITE);
 
 	/* Need XSETBV to not be intercepted, HV can't modify XCR0 directly */
 	clr_intercept(svm, INTERCEPT_XSETBV);
