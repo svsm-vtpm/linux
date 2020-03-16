@@ -7670,6 +7670,17 @@ static bool vmx_apic_init_signal_blocked(struct kvm_vcpu *vcpu)
 	return to_vmx(vcpu)->nested.vmxon;
 }
 
+static bool vmx_reg_read_override(struct kvm_vcpu *vcpu, enum kvm_reg reg)
+{
+	return false;
+}
+
+static bool vmx_reg_write_override(struct kvm_vcpu *vcpu, enum kvm_reg reg,
+				   unsigned long val)
+{
+	return false;
+}
+
 static __init int hardware_setup(void)
 {
 	unsigned long host_bndcfgs;
@@ -8002,6 +8013,9 @@ static struct kvm_x86_ops vmx_x86_ops __ro_after_init = {
 	.nested_get_evmcs_version = NULL,
 	.need_emulation_on_page_fault = vmx_need_emulation_on_page_fault,
 	.apic_init_signal_blocked = vmx_apic_init_signal_blocked,
+
+	.reg_read_override = vmx_reg_read_override,
+	.reg_write_override = vmx_reg_write_override,
 };
 
 static void vmx_cleanup_l1d_flush(void)

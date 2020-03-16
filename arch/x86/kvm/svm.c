@@ -154,7 +154,7 @@ static DEFINE_PER_CPU(u64, current_tsc_ratio);
 
 static const struct svm_direct_access_msrs {
 	u32 index;   /* Index of the MSR */
-	bool always; /* True if intercept is always on */
+	bool always; /* True if intercept is always off */
 } direct_access_msrs[] = {
 	{ .index = MSR_STAR,				.always = true  },
 	{ .index = MSR_IA32_SYSENTER_CS,		.always = true  },
@@ -172,6 +172,9 @@ static const struct svm_direct_access_msrs {
 	{ .index = MSR_IA32_LASTBRANCHTOIP,		.always = false },
 	{ .index = MSR_IA32_LASTINTFROMIP,		.always = false },
 	{ .index = MSR_IA32_LASTINTTOIP,		.always = false },
+	{ .index = MSR_EFER,				.always = false },
+	{ .index = MSR_IA32_CR_PAT,			.always = false },
+	{ .index = MSR_AMD64_SEV_ES_GHCB,		.always = true  },
 	{ .index = MSR_INVALID,				.always = false },
 };
 
@@ -306,6 +309,7 @@ enum {
 
 #define VMCB_AVIC_APIC_BAR_MASK		0xFFFFFFFFFF000ULL
 
+static u8 sev_enc_bit;
 static int sev_flush_asids(void);
 static DECLARE_RWSEM(sev_deactivate_lock);
 static DEFINE_MUTEX(sev_bitmap_lock);
@@ -410,26 +414,35 @@ static inline bool is_cr_intercept(struct vcpu_svm *svm, int bit)
 	return vmcb->control.intercept_cr & (1U << bit);
 }
 
+#define SVM_DR_INTERCEPTS		\
+	((1 << INTERCEPT_DR0_READ)	\
+	| (1 << INTERCEPT_DR1_READ)	\
+	| (1 << INTERCEPT_DR2_READ)	\
+	| (1 << INTERCEPT_DR3_READ)	\
+	| (1 << INTERCEPT_DR4_READ)	\
+	| (1 << INTERCEPT_DR5_READ)	\
+	| (1 << INTERCEPT_DR6_READ)	\
+	| (1 << INTERCEPT_DR7_READ)	\
+	| (1 << INTERCEPT_DR0_WRITE)	\
+	| (1 << INTERCEPT_DR1_WRITE)	\
+	| (1 << INTERCEPT_DR2_WRITE)	\
+	| (1 << INTERCEPT_DR3_WRITE)	\
+	| (1 << INTERCEPT_DR4_WRITE)	\
+	| (1 << INTERCEPT_DR5_WRITE)	\
+	| (1 << INTERCEPT_DR6_WRITE)	\
+	| (1 << INTERCEPT_DR7_WRITE))
+
+#define SVM_SEV_ES_DR_INTERCEPTS	\
+	((1 << INTERCEPT_DR7_READ)	\
+	| (1 << INTERCEPT_DR7_WRITE))
+
 static inline void set_dr_intercepts(struct vcpu_svm *svm)
 {
 	struct vmcb *vmcb = get_host_vmcb(svm);
 
-	vmcb->control.intercept_dr = (1 << INTERCEPT_DR0_READ)
-		| (1 << INTERCEPT_DR1_READ)
-		| (1 << INTERCEPT_DR2_READ)
-		| (1 << INTERCEPT_DR3_READ)
-		| (1 << INTERCEPT_DR4_READ)
-		| (1 << INTERCEPT_DR5_READ)
-		| (1 << INTERCEPT_DR6_READ)
-		| (1 << INTERCEPT_DR7_READ)
-		| (1 << INTERCEPT_DR0_WRITE)
-		| (1 << INTERCEPT_DR1_WRITE)
-		| (1 << INTERCEPT_DR2_WRITE)
-		| (1 << INTERCEPT_DR3_WRITE)
-		| (1 << INTERCEPT_DR4_WRITE)
-		| (1 << INTERCEPT_DR5_WRITE)
-		| (1 << INTERCEPT_DR6_WRITE)
-		| (1 << INTERCEPT_DR7_WRITE);
+	vmcb->control.intercept_dr =
+		(sev_es_guest(svm->vcpu.kvm)) ? SVM_SEV_ES_DR_INTERCEPTS
+					      : SVM_DR_INTERCEPTS;
 
 	recalc_intercepts(svm);
 }
@@ -438,7 +451,9 @@ static inline void clr_dr_intercepts(struct vcpu_svm *svm)
 {
 	struct vmcb *vmcb = get_host_vmcb(svm);
 
-	vmcb->control.intercept_dr = 0;
+	vmcb->control.intercept_dr =
+		(sev_es_guest(svm->vcpu.kvm)) ? SVM_SEV_ES_DR_INTERCEPTS
+					      : 0;
 
 	recalc_intercepts(svm);
 }
@@ -1034,6 +1049,11 @@ static void disable_nmi_singlestep(struct vcpu_svm *svm)
 	}
 }
 
+static void set_ghcb_msr(struct vcpu_svm *svm, u64 value)
+{
+	svm->vmcb->control.ghcb_gpa = value;
+}
+
 /* Note:
  * This hash table is used to map VM_ID to a struct kvm_svm,
  * when handling AMD IOMMU GALOG notification to schedule in
@@ -1109,6 +1129,9 @@ static __init void sev_hardware_setup(void)
 
 	/* Minimum ASID value that should be used for SEV guest */
 	min_sev_asid = edx;
+
+	/* Set encryption bit location for SEV-ES guests */
+	sev_enc_bit = ebx & 0x3f;
 
 	/* Initialize SEV ASID bitmaps */
 	sev_asid_bitmap = bitmap_zalloc(max_sev_asid, GFP_KERNEL);
@@ -1422,6 +1445,38 @@ static u64 svm_write_l1_tsc_offset(struct kvm_vcpu *vcpu, u64 offset)
 	return svm->vmcb->control.tsc_offset;
 }
 
+static void sev_es_init_vmcb(struct vcpu_svm *svm)
+{
+	svm->vmcb->control.nested_ctl |= SVM_NESTED_CTL_SEV_ES_ENABLE;
+	svm->vmcb->control.virt_ext |= LBR_CTL_ENABLE_MASK;
+
+	/*
+	 * Do not include the encryption mask on VMSA physical address
+	 * since hardware will access it using the guest key.
+	 */
+	svm->vmcb->control.vmsa_pa = __pa(svm->vmsa);
+
+	set_ghcb_msr(svm, GHCB_MSR_SEV_INFO(GHCB_VERSION_MAX,
+					    GHCB_VERSION_MIN,
+					    sev_enc_bit));
+
+	clr_cr_intercept(svm, INTERCEPT_CR0_READ);
+	clr_cr_intercept(svm, INTERCEPT_CR4_READ);
+	clr_cr_intercept(svm, INTERCEPT_CR0_WRITE);
+	clr_cr_intercept(svm, INTERCEPT_CR4_WRITE);
+
+	/* Need XSETBV to not be intercepted, HV can't modify XCR0 directly */
+	clr_intercept(svm, INTERCEPT_XSETBV);
+	clr_intercept(svm, INTERCEPT_SELECTIVE_CR0);
+
+	set_msr_interception(svm->msrpm, MSR_EFER, 1, 1);
+	set_msr_interception(svm->msrpm, MSR_IA32_CR_PAT, 1, 1);
+	set_msr_interception(svm->msrpm, MSR_IA32_LASTBRANCHFROMIP, 1, 1);
+	set_msr_interception(svm->msrpm, MSR_IA32_LASTBRANCHTOIP, 1, 1);
+	set_msr_interception(svm->msrpm, MSR_IA32_LASTINTFROMIP, 1, 1);
+	set_msr_interception(svm->msrpm, MSR_IA32_LASTINTTOIP, 1, 1);
+}
+
 static void avic_init_vmcb(struct vcpu_svm *svm)
 {
 	struct vmcb *vmcb = svm->vmcb;
@@ -1591,6 +1646,9 @@ static void init_vmcb(struct vcpu_svm *svm)
 	if (sev_guest(svm->vcpu.kvm)) {
 		svm->vmcb->control.nested_ctl |= SVM_NESTED_CTL_SEV_ENABLE;
 		clr_exception_intercept(svm, UD_VECTOR);
+
+		if (sev_es_guest(svm->vcpu.kvm))
+			sev_es_init_vmcb(svm);
 	}
 
 	mark_all_dirty(svm->vmcb);
@@ -2105,6 +2163,7 @@ static int svm_create_vcpu(struct kvm_vcpu *vcpu)
 	struct page *msrpm_pages;
 	struct page *hsave_page;
 	struct page *nested_msrpm_pages;
+	struct page *vmsa_page = NULL, *ghcb_page = NULL;
 	int err;
 
 	BUILD_BUG_ON(offsetof(struct vcpu_svm, vcpu) != 0);
@@ -2127,9 +2186,19 @@ static int svm_create_vcpu(struct kvm_vcpu *vcpu)
 	if (!hsave_page)
 		goto free_page3;
 
+	if (sev_es_guest(svm->vcpu.kvm)) {
+		vmsa_page = alloc_page(GFP_KERNEL);
+		if (!vmsa_page)
+			goto free_page4;
+
+		ghcb_page = alloc_page(GFP_KERNEL);
+		if (!ghcb_page)
+			goto free_page5;
+	}
+
 	err = avic_init_vcpu(svm);
 	if (err)
-		goto free_page4;
+		goto free_page6;
 
 	/* We initialize this flag to true to make sure that the is_running
 	 * bit would be set the first time the vcpu is loaded.
@@ -2148,6 +2217,15 @@ static int svm_create_vcpu(struct kvm_vcpu *vcpu)
 	svm->vmcb = page_address(page);
 	clear_page(svm->vmcb);
 	svm->vmcb_pa = __sme_set(page_to_pfn(page) << PAGE_SHIFT);
+
+	if (vmsa_page && ghcb_page) {
+		svm->vmsa = page_address(vmsa_page);
+		clear_page(svm->vmsa);
+
+		svm->ghcb = page_address(ghcb_page);
+		clear_page(svm->ghcb);
+	}
+
 	svm->asid_generation = 0;
 	init_vmcb(svm);
 
@@ -2156,6 +2234,12 @@ static int svm_create_vcpu(struct kvm_vcpu *vcpu)
 
 	return 0;
 
+free_page6:
+	if (ghcb_page)
+		__free_page(ghcb_page);
+free_page5:
+	if (vmsa_page)
+		__free_page(vmsa_page);
 free_page4:
 	__free_page(hsave_page);
 free_page3:
@@ -2186,6 +2270,24 @@ static void svm_free_vcpu(struct kvm_vcpu *vcpu)
 	 * vmcb page recorded as its current vmcb.
 	 */
 	svm_clear_current_vmcb(svm->vmcb);
+
+	if (sev_es_guest(vcpu->kvm)) {
+		struct kvm_sev_info *sev = &to_kvm_svm(vcpu->kvm)->sev_info;
+		u64 page_to_flush;
+
+		__free_page(virt_to_page(svm->ghcb));
+
+		/*
+		 * The VMSA page was used by hardware to hold guest encrypted
+		 * state, be sure to flush it before returning it to the
+		 * system. This is done using the VM Page Flush MSR (which
+		 * takes the page virtual address and guest ASID).
+		 */
+		page_to_flush = (u64)svm->vmsa | sev->asid;
+		wrmsrl(MSR_AMD64_VM_PAGE_FLUSH, page_to_flush);
+
+		__free_page(virt_to_page(svm->vmsa));
+	}
 
 	__free_page(pfn_to_page(__sme_clr(svm->vmcb_pa) >> PAGE_SHIFT));
 	__free_pages(virt_to_page(svm->msrpm), MSRPM_ALLOC_ORDER);
@@ -4779,6 +4881,7 @@ static void dump_vmcb(struct kvm_vcpu *vcpu)
 	pr_err("%-20s%lld\n", "nested_ctl:", control->nested_ctl);
 	pr_err("%-20s%016llx\n", "nested_cr3:", control->nested_cr3);
 	pr_err("%-20s%016llx\n", "avic_vapic_bar:", control->avic_vapic_bar);
+	pr_err("%-20s%016llx\n", "ghcb:", control->ghcb_gpa);
 	pr_err("%-20s%08x\n", "event_inj:", control->event_inj);
 	pr_err("%-20s%08x\n", "event_inj_err:", control->event_inj_err);
 	pr_err("%-20s%lld\n", "virt_ext:", control->virt_ext);
@@ -7153,6 +7256,58 @@ find_enc_region(struct kvm *kvm, struct kvm_enc_region *range)
 	return NULL;
 }
 
+static bool svm_reg_read_override(struct kvm_vcpu *vcpu, enum kvm_reg reg)
+{
+	return sev_es_guest(vcpu->kvm);
+}
+
+static unsigned long svm_reg_read(struct kvm_vcpu *vcpu, enum kvm_reg reg)
+{
+	struct vmcb_save_area *vmsa;
+	unsigned int entry;
+	u64 *vmsa_reg;
+
+	entry = vcpu_to_vmsa_entry(reg);
+	if (entry == VMSA_REG_UNDEF)
+		return 0;
+
+	vmsa = get_vmsa(to_svm(vcpu));
+	vmsa_reg = (u64 *)vmsa;
+
+	return vmsa_reg[entry];
+}
+
+static bool svm_reg_write_override(struct kvm_vcpu *vcpu, enum kvm_reg reg,
+				   unsigned long val)
+{
+	return sev_es_guest(vcpu->kvm);
+}
+
+static void svm_reg_write(struct kvm_vcpu *vcpu, enum kvm_reg reg,
+			  unsigned long val)
+{
+	struct vmcb_save_area *vmsa;
+	struct vcpu_svm *svm;
+	unsigned int entry;
+	u64 *vmsa_reg;
+
+	entry = vcpu_to_vmsa_entry(reg);
+	if (entry == VMSA_REG_UNDEF)
+		return;
+
+	svm = to_svm(vcpu);
+	vmsa = get_vmsa(svm);
+	vmsa_reg = (u64 *)vmsa;
+
+	if (svm->vcpu.arch.vmsa_encrypted) {
+		unsigned int index = entry / 8;
+		unsigned int shift = entry % 8;
+
+		vmsa->valid_bitmap[index] |= BIT(shift);
+	}
+
+	vmsa_reg[entry] = val;
+}
 
 static int svm_unregister_enc_region(struct kvm *kvm,
 				     struct kvm_enc_region *range)
@@ -7419,10 +7574,19 @@ static struct kvm_x86_ops svm_x86_ops __ro_after_init = {
 	.need_emulation_on_page_fault = svm_need_emulation_on_page_fault,
 
 	.apic_init_signal_blocked = svm_apic_init_signal_blocked,
+
+	.reg_read_override = svm_reg_read_override,
+	.reg_read = svm_reg_read,
+	.reg_write_override = svm_reg_write_override,
+	.reg_write = svm_reg_write,
 };
 
 static int __init svm_init(void)
 {
+	BUILD_BUG_ON(sizeof(struct vmcb_control_area) != 1024);
+	BUILD_BUG_ON(sizeof(struct vmcb_save_area) != 2048);
+	BUILD_BUG_ON(sizeof(struct ghcb) != 4096);
+
 	return kvm_init(&svm_x86_ops, sizeof(struct vcpu_svm),
 			__alignof__(struct vcpu_svm), THIS_MODULE);
 }
