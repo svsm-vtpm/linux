@@ -9549,11 +9549,29 @@ void kvm_vcpu_deliver_sipi_vector(struct kvm_vcpu *vcpu, u8 vector)
 {
 	struct kvm_segment cs;
 
-	kvm_get_segment(vcpu, &cs, VCPU_SREG_CS);
-	cs.selector = vector << 8;
-	cs.base = vector << 12;
-	kvm_set_segment(vcpu, &cs, VCPU_SREG_CS);
-	kvm_rip_write(vcpu, 0);
+	if (vcpu->arch.vmsa_encrypted) {
+		/*
+		 * For SEV-ES, the register state can't be altered by
+		 * KVM, so:
+		 *   First SIPI: Do nothing, use the values as initially
+		 *               set.
+		 *   Subsequent SIPI: Return from a vmgexit, so that the
+		 *               guest can set the vector.
+		 */
+		if (vcpu->arch.first_sipi_done) {
+			/*TODO: Make sure vCPU is in VMGEXIT processor stop loop */
+			vcpu->arch.wait_for_sipi = false;
+			vcpu->arch.mp_state = KVM_MP_STATE_RUNNABLE;
+		} else {
+			vcpu->arch.first_sipi_done = true;
+		}
+	} else {
+		kvm_get_segment(vcpu, &cs, VCPU_SREG_CS);
+		cs.selector = vector << 8;
+		cs.base = vector << 12;
+		kvm_set_segment(vcpu, &cs, VCPU_SREG_CS);
+		kvm_rip_write(vcpu, 0);
+	}
 }
 
 int kvm_arch_hardware_enable(void)
