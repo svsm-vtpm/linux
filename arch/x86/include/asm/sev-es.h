@@ -58,6 +58,7 @@ struct es_em_ctxt {
 	struct pt_regs *regs;
 	struct insn insn;
 	struct es_fault_info fi;
+	unsigned long cpuid_cache_index;
 };
 
 static inline u64 lower_bits(u64 val, unsigned int bits)

@@ -14,6 +14,7 @@
 #include <linux/set_memory.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
+#include <linux/xarray.h>
 
 #include <asm/trap_defs.h>
 #include <asm/realmode.h>
@@ -26,6 +27,16 @@
 #include <asm/cpu.h>
 
 #define DR7_RESET_VALUE        0x400
+
+struct sev_es_cpuid_cache_entry {
+	unsigned long eax;
+	unsigned long ebx;
+	unsigned long ecx;
+	unsigned long edx;
+};
+
+static struct xarray sev_es_cpuid_cache;
+static bool __ro_after_init sev_es_cpuid_cache_initialized;
 
 /* For early boot hypervisor communication in SEV-ES enabled guests */
 struct ghcb boot_ghcb_page __bss_decrypted __aligned(PAGE_SIZE);
@@ -405,6 +416,9 @@ void sev_es_init_ghcbs(void)
 	}
 
 	sev_es_setup_play_dead();
+
+	xa_init_flags(&sev_es_cpuid_cache, XA_FLAGS_LOCK_IRQ);
+	sev_es_cpuid_cache_initialized = true;
 }
 
 static void __init vc_early_vc_forward_exception(struct es_em_ctxt *ctxt)
@@ -416,6 +430,91 @@ static void __init vc_early_vc_forward_exception(struct es_em_ctxt *ctxt)
 
 	ctxt->regs->orig_ax = ctxt->fi.error_code;
 	early_exception(ctxt->regs, trapnr);
+}
+
+static void sev_es_set_cpuid_cache_index(struct es_em_ctxt *ctxt)
+{
+	unsigned long hi, lo;
+
+	ctxt->cpuid_cache_index = ULONG_MAX;
+
+	/* Don't attempt to cache until the xarray is initialized */
+	if (!sev_es_cpuid_cache_initialized)
+		return;
+
+	lo = ctxt->regs->ax & 0xffffffff;
+
+	/*
+	 * CPUID 0x0000000d requires both RCX and XCR0, so it can't be
+	 * cached.
+	 */
+	if (lo == 0x0000000d)
+		return;
+
+	/*
+	 * Some callers of CPUID don't always set RCX to zero for CPUID
+	 * functions that don't require RCX, which can result in excessive
+	 * cached values, so RCX needs to be manually zeroed for use as part
+	 * of the cache index. Future CPUID values may need RCX, but since
+	 * they can't be known, they must not be cached.
+	 */
+	if (lo > 0x80000020)
+		return;
+
+	switch (lo) {
+	case 0x00000007:
+	case 0x0000000b:
+	case 0x0000000f:
+	case 0x00000010:
+	case 0x8000001d:
+	case 0x80000020:
+		hi = ctxt->regs->cx << 32;
+		break;
+	default:
+		hi = 0;
+	}
+
+	ctxt->cpuid_cache_index = hi | lo;
+}
+
+static bool sev_es_check_cpuid_cache(struct es_em_ctxt *ctxt)
+{
+	struct sev_es_cpuid_cache_entry *cache_entry;
+
+	if (ctxt->cpuid_cache_index == ULONG_MAX)
+		return false;
+
+	cache_entry = xa_load(&sev_es_cpuid_cache, ctxt->cpuid_cache_index);
+	if (!cache_entry)
+		return false;
+
+	ctxt->regs->ax = cache_entry->eax;
+	ctxt->regs->bx = cache_entry->ebx;
+	ctxt->regs->cx = cache_entry->ecx;
+	ctxt->regs->dx = cache_entry->edx;
+
+	return true;
+}
+
+static void sev_es_add_cpuid_cache(struct es_em_ctxt *ctxt)
+{
+	struct sev_es_cpuid_cache_entry *cache_entry;
+	int ret;
+
+	if (ctxt->cpuid_cache_index == ULONG_MAX)
+		return;
+
+	cache_entry = kzalloc(sizeof(*cache_entry), GFP_ATOMIC);
+	if (cache_entry) {
+		cache_entry->eax = ctxt->regs->ax;
+		cache_entry->ebx = ctxt->regs->bx;
+		cache_entry->ecx = ctxt->regs->cx;
+		cache_entry->edx = ctxt->regs->dx;
+
+		/* Ignore insertion errors */
+		ret = xa_insert(&sev_es_cpuid_cache, ctxt->cpuid_cache_index,
+				cache_entry, GFP_ATOMIC);
+	}
 }
 
 static enum es_result vc_handle_dr7_write(struct ghcb *ghcb,
@@ -617,7 +716,14 @@ static enum es_result vc_handle_exitcode(struct es_em_ctxt *ctxt,
 		result = ES_UNSUPPORTED;
 		break;
 	case SVM_EXIT_CPUID:
-		result = vc_handle_cpuid(ghcb, ctxt);
+		sev_es_set_cpuid_cache_index(ctxt);
+		if (sev_es_check_cpuid_cache(ctxt)) {
+			result = ES_OK;
+		} else {
+			result = vc_handle_cpuid(ghcb, ctxt);
+			if (result == ES_OK)
+				sev_es_add_cpuid_cache(ctxt);
+		}
 		break;
 	case SVM_EXIT_IOIO:
 		result = vc_handle_ioio(ghcb, ctxt);
