@@ -204,6 +204,11 @@ static phys_addr_t vc_slow_virt_to_phys(struct ghcb *ghcb, long vaddr)
 /* Include code shared with pre-decompression boot stage */
 #include "sev-es-shared.c"
 
+unsigned long sev_es_get_ghcb_pa(int cpu)
+{
+	return __pa(per_cpu_ptr(ghcb_page, cpu));
+}
+
 void sev_es_nmi_enter(void)
 {
 	this_cpu_write(sev_es_in_nmi, true);

@@ -86,12 +86,17 @@ struct real_mode_header;
 #ifdef CONFIG_AMD_MEM_ENCRYPT
 int sev_es_setup_ap_jump_table(struct real_mode_header *rmh);
 void sev_es_nmi_enter(void);
+unsigned long sev_es_get_ghcb_pa(int cpu);
 #else /* CONFIG_AMD_MEM_ENCRYPT */
 static inline int sev_es_setup_ap_jump_table(struct real_mode_header *rmh)
 {
 	return 0;
 }
 static inline void sev_es_nmi_enter(void) { }
+static inline unsigned long sev_es_get_ghcb_pa(int cpu)
+{
+	return 0UL;
+}
 #endif /* CONFIG_AMD_MEM_ENCRYPT*/
 
 #else /* !__ASSEMBLY__ */
