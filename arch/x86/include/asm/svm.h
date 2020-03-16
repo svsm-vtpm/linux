@@ -2,6 +2,9 @@
 #ifndef __SVM_H
 #define __SVM_H
 
+#include <linux/bug.h>
+#include <linux/kvm_host.h>
+
 #include <uapi/asm/svm.h>
 
 
@@ -332,6 +335,276 @@ struct __attribute__ ((__packed__)) vmcb {
 #define SVM_EXITINFO_REG_MASK 0x0F
 
 #define SVM_CR0_SELECTIVE_MASK (X86_CR0_TS | X86_CR0_MP)
+
+static const u32 host_save_user_msrs[] = {
+#ifdef CONFIG_X86_64
+	MSR_STAR, MSR_LSTAR, MSR_CSTAR, MSR_SYSCALL_MASK, MSR_KERNEL_GS_BASE,
+	MSR_FS_BASE,
+#endif
+	MSR_IA32_SYSENTER_CS, MSR_IA32_SYSENTER_ESP, MSR_IA32_SYSENTER_EIP,
+	MSR_TSC_AUX,
+};
+
+#define NR_HOST_SAVE_USER_MSRS ARRAY_SIZE(host_save_user_msrs)
+
+struct kvm_sev_info {
+	bool active;		/* SEV enabled guest */
+	bool es_active;		/* SEV-ES enabled guest */
+	unsigned int asid;	/* ASID used for this guest */
+	unsigned int handle;	/* SEV firmware handle */
+	int fd;			/* SEV device fd */
+	unsigned long pages_locked; /* Number of pages locked */
+	struct list_head regions_list;  /* List of registered regions */
+};
+
+struct kvm_svm {
+	struct kvm kvm;
+
+	/* Struct members for AVIC */
+	u32 avic_vm_id;
+	struct page *avic_logical_id_table_page;
+	struct page *avic_physical_id_table_page;
+	struct hlist_node hnode;
+
+	struct kvm_sev_info sev_info;
+};
+
+struct nested_state {
+	struct vmcb *hsave;
+	u64 hsave_msr;
+	u64 vm_cr_msr;
+	u64 vmcb;
+
+	/* These are the merged vectors */
+	u32 *msrpm;
+
+	/* gpa pointers to the real vectors */
+	u64 vmcb_msrpm;
+	u64 vmcb_iopm;
+
+	/* A VMEXIT is required but not yet emulated */
+	bool exit_required;
+
+	/* cache for intercepts of the guest */
+	u32 intercept_cr;
+	u32 intercept_dr;
+	u32 intercept_exceptions;
+	u64 intercept;
+
+	/* Nested Paging related state */
+	u64 nested_cr3;
+};
+
+struct vcpu_svm {
+	struct kvm_vcpu vcpu;
+	struct vmcb *vmcb;
+	unsigned long vmcb_pa;
+	struct svm_cpu_data *svm_data;
+	uint64_t asid_generation;
+	uint64_t sysenter_esp;
+	uint64_t sysenter_eip;
+	uint64_t tsc_aux;
+
+	u64 msr_decfg;
+
+	u64 next_rip;
+
+	u64 host_user_msrs[NR_HOST_SAVE_USER_MSRS];
+	struct {
+		u16 fs;
+		u16 gs;
+		u16 ldt;
+		u64 gs_base;
+	} host;
+
+	u64 spec_ctrl;
+	/*
+	 * Contains guest-controlled bits of VIRT_SPEC_CTRL, which will be
+	 * translated into the appropriate L2_CFG bits on the host to
+	 * perform speculative control.
+	 */
+	u64 virt_spec_ctrl;
+
+	u32 *msrpm;
+
+	ulong nmi_iret_rip;
+
+	struct nested_state nested;
+
+	bool nmi_singlestep;
+	u64 nmi_singlestep_guest_rflags;
+
+	unsigned int3_injected;
+	unsigned long int3_rip;
+
+	/* cached guest cpuid flags for faster access */
+	bool nrips_enabled	: 1;
+
+	u32 ldr_reg;
+	u32 dfr_reg;
+	struct page *avic_backing_page;
+	u64 *avic_physical_id_cache;
+	bool avic_is_running;
+
+	/*
+	 * Per-vcpu list of struct amd_svm_iommu_ir:
+	 * This is used mainly to store interrupt remapping information used
+	 * when update the vcpu affinity. This avoids the need to scan for
+	 * IRTE and try to match ga_tag in the IOMMU driver.
+	 */
+	struct list_head ir_list;
+	spinlock_t ir_list_lock;
+
+	/* which host CPU was used for running this vcpu */
+	unsigned int last_cpu;
+};
+
+#define __sme_page_pa(x) __sme_set(page_to_pfn(x) << PAGE_SHIFT)
+
+struct enc_region {
+	struct list_head list;
+	unsigned long npages;
+	struct page **pages;
+	unsigned long uaddr;
+	unsigned long size;
+};
+
+static inline struct kvm_svm *to_kvm_svm(struct kvm *kvm)
+{
+	return container_of(kvm, struct kvm_svm, kvm);
+}
+
+static inline bool sev_guest(struct kvm *kvm)
+{
+#ifdef CONFIG_KVM_AMD_SEV
+	struct kvm_sev_info *sev = &to_kvm_svm(kvm)->sev_info;
+
+	return sev->active;
+#else
+	return false;
+#endif
+}
+
+static inline bool sev_es_guest(struct kvm *kvm)
+{
+#ifdef CONFIG_KVM_AMD_SEV
+	struct kvm_sev_info *sev = &to_kvm_svm(kvm)->sev_info;
+
+	return sev_guest(kvm) && sev->es_active;
+#else
+	return false;
+#endif
+}
+
+static inline int sev_get_asid(struct kvm *kvm)
+{
+	struct kvm_sev_info *sev = &to_kvm_svm(kvm)->sev_info;
+
+	return sev->asid;
+}
+
+static inline struct vmcb_save_area *get_vmsa(struct vcpu_svm *svm)
+{
+	return &svm->vmcb->save;
+}
+
+/* VMSA Accessor functions */
+
+#define DEFINE_VMSA_SEGMENT_ENTRY(field, entry, size)			\
+	static inline size						\
+	svm_##field##_read_##entry(struct vcpu_svm *svm)		\
+	{								\
+		return get_vmsa(svm)->field.entry;			\
+	}								\
+									\
+	static inline void						\
+	svm_##field##_write_##entry(struct vcpu_svm *svm,		\
+				     size value)			\
+	{								\
+		get_vmsa(svm)->field.entry = value;			\
+	}								\
+
+#define DEFINE_VMSA_SEGMENT_ACCESSOR(field)				\
+	DEFINE_VMSA_SEGMENT_ENTRY(field, selector, u16)			\
+	DEFINE_VMSA_SEGMENT_ENTRY(field, attrib, u16)			\
+	DEFINE_VMSA_SEGMENT_ENTRY(field, limit, u32)			\
+	DEFINE_VMSA_SEGMENT_ENTRY(field, base, u64)			\
+	static inline void						\
+	svm_##field##_write(struct vcpu_svm *svm,			\
+			     struct vmcb_seg *seg)			\
+	{								\
+		get_vmsa(svm)->field = *seg;				\
+	}
+
+DEFINE_VMSA_SEGMENT_ACCESSOR(cs)
+DEFINE_VMSA_SEGMENT_ACCESSOR(ds)
+DEFINE_VMSA_SEGMENT_ACCESSOR(es)
+DEFINE_VMSA_SEGMENT_ACCESSOR(fs)
+DEFINE_VMSA_SEGMENT_ACCESSOR(gs)
+DEFINE_VMSA_SEGMENT_ACCESSOR(ss)
+DEFINE_VMSA_SEGMENT_ACCESSOR(gdtr)
+DEFINE_VMSA_SEGMENT_ACCESSOR(idtr)
+DEFINE_VMSA_SEGMENT_ACCESSOR(ldtr)
+DEFINE_VMSA_SEGMENT_ACCESSOR(tr)
+
+#define DEFINE_VMSA_ACCESSOR(field, size)				\
+	static inline size						\
+	svm_##field##_read(struct vcpu_svm *svm)			\
+	{								\
+		return get_vmsa(svm)->field;				\
+	}								\
+									\
+	static inline void						\
+	svm_##field##_write(struct vcpu_svm *svm, size value)		\
+	{								\
+		get_vmsa(svm)->field = value;				\
+	}								\
+									\
+	static inline void						\
+	svm_##field##_and(struct vcpu_svm *svm, size value)		\
+	{								\
+		get_vmsa(svm)->field &= value;				\
+	}								\
+									\
+	static inline void						\
+	svm_##field##_or(struct vcpu_svm *svm, size value)		\
+	{								\
+		get_vmsa(svm)->field |= value;				\
+	}
+
+#define DEFINE_VMSA_U64_ACCESSOR(field)					\
+	DEFINE_VMSA_ACCESSOR(field, u64)
+
+#define DEFINE_VMSA_U8_ACCESSOR(field)					\
+	DEFINE_VMSA_ACCESSOR(field, u8)
+
+DEFINE_VMSA_U8_ACCESSOR(cpl)
+
+DEFINE_VMSA_U64_ACCESSOR(efer)
+DEFINE_VMSA_U64_ACCESSOR(cr0)
+DEFINE_VMSA_U64_ACCESSOR(cr2)
+DEFINE_VMSA_U64_ACCESSOR(cr3)
+DEFINE_VMSA_U64_ACCESSOR(cr4)
+DEFINE_VMSA_U64_ACCESSOR(dr6)
+DEFINE_VMSA_U64_ACCESSOR(dr7)
+DEFINE_VMSA_U64_ACCESSOR(rflags)
+DEFINE_VMSA_U64_ACCESSOR(rip)
+DEFINE_VMSA_U64_ACCESSOR(star)
+DEFINE_VMSA_U64_ACCESSOR(lstar)
+DEFINE_VMSA_U64_ACCESSOR(cstar)
+DEFINE_VMSA_U64_ACCESSOR(sfmask)
+DEFINE_VMSA_U64_ACCESSOR(kernel_gs_base)
+DEFINE_VMSA_U64_ACCESSOR(sysenter_cs)
+DEFINE_VMSA_U64_ACCESSOR(sysenter_esp)
+DEFINE_VMSA_U64_ACCESSOR(sysenter_eip)
+DEFINE_VMSA_U64_ACCESSOR(g_pat)
+DEFINE_VMSA_U64_ACCESSOR(dbgctl)
+DEFINE_VMSA_U64_ACCESSOR(br_from)
+DEFINE_VMSA_U64_ACCESSOR(br_to)
+DEFINE_VMSA_U64_ACCESSOR(last_excp_from)
+DEFINE_VMSA_U64_ACCESSOR(last_excp_to)
+DEFINE_VMSA_U64_ACCESSOR(rax)
+DEFINE_VMSA_U64_ACCESSOR(rsp)
 
 /* GHCB Accessor functions */
 

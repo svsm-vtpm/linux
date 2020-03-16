@@ -5,6 +5,10 @@
  * Author: Joerg Roedel <jroedel@suse.de>
  */
 
+#undef CONFIG_FUNCTION_TRACER
+#undef CONFIG_STACK_TRACER
+#undef CONFIG_DYNAMIC_FTRACE
+
 #include <linux/kernel.h>
 
 #include <asm/sev-es.h>
