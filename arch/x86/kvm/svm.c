@@ -1487,6 +1487,7 @@ static void sev_es_init_vmcb(struct vcpu_svm *svm)
 	clr_cr_intercept(svm, INTERCEPT_CR8_WRITE);
 
 	set_intercept(svm, TRAP_CR0_WRITE);
+	set_intercept(svm, TRAP_CR4_WRITE);
 
 	/* Need XSETBV to not be intercepted, HV can't modify XCR0 directly */
 	clr_intercept(svm, INTERCEPT_XSETBV);
@@ -4208,6 +4209,9 @@ static int cr_trap(struct vcpu_svm *svm)
 	case 0:
 		kvm_track_cr0(&svm->vcpu, svm->vmcb->control.exit_info_1);
 		break;
+	case 4:
+		kvm_track_cr4(&svm->vcpu, svm->vmcb->control.exit_info_1);
+		break;
 	default:
 		WARN(1, "unhandled CR%d write trap", cr);
 		kvm_queue_exception(&svm->vcpu, UD_VECTOR);
@@ -5020,6 +5024,7 @@ static int (*const svm_exit_handlers[])(struct vcpu_svm *svm) = {
 	[SVM_EXIT_AVIC_UNACCELERATED_ACCESS]	= avic_unaccelerated_access_interception,
 	[SVM_EXIT_VMGEXIT]			= handle_vmgexit,
 	[SVM_EXIT_CR0_WRITE_TRAP]		= cr_trap,
+	[SVM_EXIT_CR4_WRITE_TRAP]		= cr_trap,
 };
 
 static void dump_vmcb(struct kvm_vcpu *vcpu)
