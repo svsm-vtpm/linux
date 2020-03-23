@@ -41,6 +41,7 @@
 #include "core_priv.h"
 #include "cma_priv.h"
 #include "restrack.h"
+#include "uverbs.h"
 
 typedef int (*res_fill_func_t)(struct sk_buff*, bool,
 			       struct rdma_restrack_entry*, uint32_t);
@@ -599,7 +600,7 @@ static int fill_res_cq_entry(struct sk_buff *msg, bool has_cap_net_admin,
 		goto err;
 	if (!rdma_is_kernel_res(res) &&
 	    nla_put_u32(msg, RDMA_NLDEV_ATTR_RES_CTXN,
-			cq->uobject->context->res.id))
+			cq->uobject->uevent.uobject.context->res.id))
 		goto err;
 
 	if (fill_res_name_pid(msg, res))
@@ -1756,6 +1757,8 @@ static int nldev_stat_set_doit(struct sk_buff *skb, struct nlmsghdr *nlh,
 		if (ret)
 			goto err_msg;
 	} else {
+		if (!tb[RDMA_NLDEV_ATTR_RES_LQPN])
+			goto err_msg;
 		qpn = nla_get_u32(tb[RDMA_NLDEV_ATTR_RES_LQPN]);
 		if (tb[RDMA_NLDEV_ATTR_STAT_COUNTER_ID]) {
 			cntn = nla_get_u32(tb[RDMA_NLDEV_ATTR_STAT_COUNTER_ID]);

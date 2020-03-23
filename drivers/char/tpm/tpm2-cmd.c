@@ -362,6 +362,7 @@ void tpm2_flush_context(struct tpm_chip *chip, u32 handle)
 	tpm_transmit_cmd(chip, &buf, 0, "flushing context");
 	tpm_buf_destroy(&buf);
 }
+EXPORT_SYMBOL_GPL(tpm2_flush_context);
 
 struct tpm2_get_cap_out {
 	u8 more_data;
@@ -523,6 +524,8 @@ static int tpm2_init_bank_info(struct tpm_chip *chip, u32 bank_index)
 		bank->crypto_id = crypto_algo;
 		return 0;
 	}
+
+	bank->crypto_id = HASH_ALGO__LAST;
 
 	return tpm2_pcr_read(chip, 0, &digest, &bank->digest_size);
 }

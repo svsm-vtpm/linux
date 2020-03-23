@@ -24,8 +24,6 @@ static ssize_t qeth_dev_state_show(struct device *dev,
 	switch (card->state) {
 	case CARD_STATE_DOWN:
 		return sprintf(buf, "DOWN\n");
-	case CARD_STATE_HARDSETUP:
-		return sprintf(buf, "HARDSETUP\n");
 	case CARD_STATE_SOFTSETUP:
 		if (card->dev->flags & IFF_UP)
 			return sprintf(buf, "UP (LAN %s)\n",
@@ -207,7 +205,7 @@ static ssize_t qeth_dev_prioqing_store(struct device *dev,
 		card->qdio.default_out_queue = QETH_DEFAULT_QUEUE;
 	} else if (sysfs_streq(buf, "prio_queueing_vlan")) {
 		if (IS_LAYER3(card)) {
-			rc = -ENOTSUPP;
+			rc = -EOPNOTSUPP;
 			goto out;
 		}
 		card->qdio.do_prio_queueing = QETH_PRIO_Q_ING_VLAN;
@@ -249,8 +247,8 @@ static ssize_t qeth_dev_bufcnt_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct qeth_card *card = dev_get_drvdata(dev);
+	unsigned int cnt;
 	char *tmp;
-	int cnt, old_cnt;
 	int rc = 0;
 
 	mutex_lock(&card->conf_mutex);
@@ -259,13 +257,12 @@ static ssize_t qeth_dev_bufcnt_store(struct device *dev,
 		goto out;
 	}
 
-	old_cnt = card->qdio.in_buf_pool.buf_count;
 	cnt = simple_strtoul(buf, &tmp, 10);
 	cnt = (cnt < QETH_IN_BUF_COUNT_MIN) ? QETH_IN_BUF_COUNT_MIN :
 		((cnt > QETH_IN_BUF_COUNT_MAX) ? QETH_IN_BUF_COUNT_MAX : cnt);
-	if (old_cnt != cnt) {
-		rc = qeth_realloc_buffer_pool(card, cnt);
-	}
+
+	rc = qeth_resize_buffer_pool(card, cnt);
+
 out:
 	mutex_unlock(&card->conf_mutex);
 	return rc ? rc : count;

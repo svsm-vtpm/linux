@@ -885,11 +885,14 @@ generic_make_request_checks(struct bio *bio)
 	}
 
 	/*
-	 * For a REQ_NOWAIT based request, return -EOPNOTSUPP
-	 * if queue is not a request based queue.
+	 * Non-mq queues do not honor REQ_NOWAIT, so complete a bio
+	 * with BLK_STS_AGAIN status in order to catch -EAGAIN and
+	 * to give a chance to the caller to repeat request gracefully.
 	 */
-	if ((bio->bi_opf & REQ_NOWAIT) && !queue_is_mq(q))
-		goto not_supported;
+	if ((bio->bi_opf & REQ_NOWAIT) && !queue_is_mq(q)) {
+		status = BLK_STS_AGAIN;
+		goto end_io;
+	}
 
 	if (should_fail_bio(bio))
 		goto end_io;
@@ -1310,7 +1313,7 @@ EXPORT_SYMBOL_GPL(blk_rq_err_bytes);
 
 void blk_account_io_completion(struct request *req, unsigned int bytes)
 {
-	if (blk_do_io_stat(req)) {
+	if (req->part && blk_do_io_stat(req)) {
 		const int sgrp = op_stat_group(req_op(req));
 		struct hd_struct *part;
 
@@ -1328,7 +1331,8 @@ void blk_account_io_done(struct request *req, u64 now)
 	 * normal IO on queueing nor completion.  Accounting the
 	 * containing request is enough.
 	 */
-	if (blk_do_io_stat(req) && !(req->rq_flags & RQF_FLUSH_SEQ)) {
+	if (req->part && blk_do_io_stat(req) &&
+	    !(req->rq_flags & RQF_FLUSH_SEQ)) {
 		const int sgrp = op_stat_group(req_op(req));
 		struct hd_struct *part;
 
@@ -1659,12 +1663,6 @@ int kblockd_schedule_work(struct work_struct *work)
 }
 EXPORT_SYMBOL(kblockd_schedule_work);
 
-int kblockd_schedule_work_on(int cpu, struct work_struct *work)
-{
-	return queue_work_on(cpu, kblockd_workqueue, work);
-}
-EXPORT_SYMBOL(kblockd_schedule_work_on);
-
 int kblockd_mod_delayed_work_on(int cpu, struct delayed_work *dwork,
 				unsigned long delay)
 {
@@ -1792,9 +1790,9 @@ int __init blk_dev_init(void)
 {
 	BUILD_BUG_ON(REQ_OP_LAST >= (1 << REQ_OP_BITS));
 	BUILD_BUG_ON(REQ_OP_BITS + REQ_FLAG_BITS > 8 *
-			FIELD_SIZEOF(struct request, cmd_flags));
+			sizeof_field(struct request, cmd_flags));
 	BUILD_BUG_ON(REQ_OP_BITS + REQ_FLAG_BITS > 8 *
-			FIELD_SIZEOF(struct bio, bi_opf));
+			sizeof_field(struct bio, bi_opf));
 
 	/* used for unplugging and affects IO latency/throughput - HIGHPRI */
 	kblockd_workqueue = alloc_workqueue("kblockd",
