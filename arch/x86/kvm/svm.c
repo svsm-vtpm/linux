@@ -268,6 +268,10 @@ module_param(sev, int, 0444);
 static int sev_es = IS_ENABLED(CONFIG_AMD_MEM_ENCRYPT_ACTIVE_BY_DEFAULT);
 module_param(sev_es, int, 0444);
 
+/* enable/disable SEV-SNP support */
+static int sev_snp = IS_ENABLED(CONFIG_AMD_MEM_ENCRYPT_ACTIVE_BY_DEFAULT);
+module_param(sev_snp, int, 0444);
+
 static bool __read_mostly dump_invalid_vmcb = 0;
 module_param(dump_invalid_vmcb, bool, 0644);
 
@@ -318,6 +322,7 @@ static unsigned int max_sev_asid;
 static unsigned int min_sev_asid;
 static unsigned long *sev_asid_bitmap;
 static unsigned long *sev_reclaim_asid_bitmap;
+static void *rmp_table_vaddr;
 
 static inline bool svm_sev_enabled(void)
 {
@@ -1118,15 +1123,89 @@ static int avic_ga_log_notifier(u32 ga_tag)
 	return 0;
 }
 
+static __init void snp_enable(void *arg)
+{
+	u64 val;
+
+	rdmsrl_safe(MSR_K8_SYSCFG, &val);
+
+	val |= MSR_K8_SYSCFG_MEM_ENCRYPT;
+	val |= MSR_K8_SYSCFG_SNP_EN;
+	val |= MSR_K8_SYSCFG_SNP_VMPL_EN;
+
+	wrmsrl(MSR_K8_SYSCFG, val);
+}
+
+static __init int init_rmp_table(void)
+{
+	u64 rmp_base, rmp_end, val;
+	unsigned long sz;
+
+	rdmsrl_safe(MSR_AMD64_RMP_BASE, &rmp_base);
+	rdmsrl_safe(MSR_AMD64_RMP_END, &rmp_end);
+
+	if (!rmp_base || !rmp_end)
+		return 1;
+
+	sz = rmp_end - rmp_base;
+
+	pr_info("SNP: RMP physical range 0x%llx - 0x%llx\n", rmp_base, rmp_end);
+
+	rmp_table_vaddr = memremap(rmp_base, sz, MEMREMAP_WB);
+	if (!rmp_table_vaddr) {
+		pr_err("SNP: failed to remap 0x%llx-0x%llx\n", rmp_base, rmp_end);
+		return 1;
+	}
+
+	pr_info("SNP: RMP table 0x%lx+0x%lx\n", (unsigned long)rmp_table_vaddr, sz);
+
+	/*
+	 *  If SYSCFG.SNP is not enabled then initialize the RMP table to zero.
+	 *  If SNP is already enabled then OS can't change the RMP table so skip it.
+	 */
+	rdmsrl_safe(MSR_K8_SYSCFG, &val);
+	if (!(val & MSR_K8_SYSCFG_MEM_ENCRYPT))
+		memset(rmp_table_vaddr, 0, sz);
+
+	return 0;
+}
+
+static __init int rmp_setup(void)
+{
+	/* initialize the rmp memory */
+	if (init_rmp_table())
+		return 1;
+
+	/* enable SNP support on all CPUs */
+	on_each_cpu(snp_enable, NULL, 1);
+
+	pr_info("SNP: rmp setup completed!\n");
+	return 0;
+}
+
+static __exit void rmp_unsetup(void)
+{
+	if (rmp_table_vaddr) {
+		memunmap(rmp_table_vaddr);
+		pr_info("SNP: rmp unsetup.\n");
+	}
+}
+
 static __init void sev_hardware_setup(void)
 {
 	struct sev_user_data_status *status = NULL;
 	unsigned int eax, ebx, ecx, edx;
-	int rc;
+
+	if (sev_snp) {
+		/* SEV-SNP requires the SEV and SEV-ES support */
+		sev_es = true;
+		sev = true;
+	}
 
 	if (!sev) {
-		/* SEV-ES is dependent upon SEV */
+		/* SEV-{ES,SNP} is dependent upon SEV */
 		sev_es = false;
+		sev_snp = false;
 		return;
 	}
 
@@ -1165,31 +1244,16 @@ static __init void sev_hardware_setup(void)
 	if (!status)
 		goto no_sev;
 
-	/*
-	 * Check SEV platform status.
-	 *
-	 * PLATFORM_STATUS can be called in any state, if we failed to query
-	 * the PLATFORM status then either PSP firmware does not support SEV
-	 * feature or SEV firmware is dead.
-	 */
-	rc = sev_platform_status(status, NULL);
-	if (rc)
-		goto no_sev;
-
 	pr_info("SEV supported: %u ASIDs\n", max_sev_asid - min_sev_asid + 1);
 
 	/*
 	 * Check for SEV-ES support.
 	 */
 	if (!sev_es)
-		return;
+		goto no_sev_snp;
 
 	/* Does the CPU support SEV-ES? */
 	if (!boot_cpu_has(X86_FEATURE_SEV_ES))
-		goto no_sev_es;
-
-	/* Is SEV-ES supported by the SEV firmware? */
-	if (!(status->flags & SEV_STATUS_FLAGS_CONFIG_ES))
 		goto no_sev_es;
 
 	/* Has the system been allocated ASIDs for SEV-ES? */
@@ -1200,6 +1264,25 @@ static __init void sev_hardware_setup(void)
 
 	pr_info("SEV-ES supported: %u ASIDs\n", min_sev_asid - 1);
 
+	/*
+	 * Check for SEV-SNP support.
+	 */
+	if (!sev_snp)
+		goto no_sev_snp;
+
+	/* Does the CPU support SEV-SNP? */
+	if (!boot_cpu_has(X86_FEATURE_SEV_SNP))
+		goto no_sev_snp;
+
+	if (rmp_setup())
+		goto no_sev_snp;
+
+	/* initialize the SNP firmware */
+	if (sev_snp_init(NULL))
+		goto no_sev_snp;
+
+	pr_info("SEV-SNP supported: %u ASIDs\n", min_sev_asid - 1);
+
 	goto out;
 
 no_sev:
@@ -1207,6 +1290,9 @@ no_sev:
 
 no_sev_es:
 	sev_es = false;
+
+no_sev_snp:
+	sev_snp = false;
 
 out:
 	kfree(status);
@@ -1292,6 +1378,9 @@ static __init void svm_adjust_mmio_mask(void)
 static void svm_hardware_teardown(void)
 {
 	int cpu;
+
+	if (sev_snp)
+		rmp_unsetup();
 
 	if (svm_sev_enabled()) {
 		bitmap_free(sev_asid_bitmap);
