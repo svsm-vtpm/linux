@@ -1507,6 +1507,9 @@ enum sev_cmd_id {
 	/* Guest certificates commands */
 	KVM_SEV_CERT_EXPORT,
 
+	/* SNP specific commands */
+	KVM_SEV_SNP_INIT,
+
 	KVM_SEV_NR_MAX,
 };
 
