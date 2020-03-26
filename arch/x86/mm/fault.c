@@ -31,6 +31,7 @@
 #include <asm/desc.h>			/* store_idt(), ...		*/
 #include <asm/cpu_entry_area.h>		/* exception stack		*/
 #include <asm/pgtable_areas.h>		/* VMALLOC_START, ...		*/
+#include <asm/svm.h>			/* struct rmpentry 		*/
 
 #define CREATE_TRACE_POINTS
 #include <asm/trace/exceptions.h>
@@ -204,6 +205,143 @@ static void show_rmptable(unsigned long address)
 	show_rmpentry(spa);
 }
 
+static bool snp_is_large_entry(unsigned long spa)
+{
+	u64 rmp_base, rmp_end;
+	struct rmp_entry *entry;
+	bool rc = false;
+
+	rdmsrl_safe(MSR_AMD64_RMP_BASE, &rmp_base);
+	rdmsrl_safe(MSR_AMD64_RMP_BASE, &rmp_end);
+
+	if (!rmp_base || !rmp_end)
+		return false;
+
+	rmp_base += (4 * PAGE_SIZE);
+	rmp_base += 16 * (spa >> PAGE_SHIFT);
+
+	entry = memremap(rmp_base, PAGE_SIZE, MEMREMAP_WB);
+	if (!entry)
+		goto exit;
+
+	rc = rmp_entry_assigned(entry) && (rmp_entry_page_size(entry) == RMP_PG_SIZE_2M);
+exit:
+	memunmap(entry);
+	return rc;
+}
+
+static int set_page_shared(unsigned long vaddr, unsigned long paddr)
+{
+	unsigned long pmask = page_level_mask(PG_LEVEL_2M);
+	int ret;
+
+	/* check if paddr is part of large RMP entry */
+	if (snp_is_large_entry(paddr & pmask)) {
+		int ret;
+
+		/* psmash the entry */
+		if ((ret = snp_psmash(paddr & pmask))) {
+			pr_alert("SNP: failed to psmash vaddr 0x%lx paddr 0x%lx\n",
+					vaddr & pmask, paddr & pmask);
+			return ret;
+		}
+	}
+
+	if ((ret = snp_rmpupdate_clear(paddr))) {
+		pr_alert("SNP: failed to clear rmpentry for vaddr 0x%lx paddr 0x%lx\n",
+				vaddr, paddr);
+		return 1;
+	}
+
+	return 0;
+}
+
+static pgprot_t pgprot_clear_protnone_bits(pgprot_t prot)
+{
+	/*
+	 * _PAGE_GLOBAL means "global page" for present PTEs.
+	 * But, it is also used to indicate _PAGE_PROTNONE
+	 * for non-present PTEs.
+	 * This ensures that a _PAGE_GLOBAL PTE going from
+	 * present to non-present is not confused as
+	 *  _PAGE_PROTNONE.
+	 */
+	if (!(pgprot_val(prot) & _PAGE_PRESENT))
+		pgprot_val(prot) &= ~_PAGE_GLOBAL;
+
+	return prot;
+}
+
+/*
+ * Function handles the RMP fault caused by the kernel virtual address access.
+ * The function splits the 2M -> 4K and 1G -> 2M. If the fault is caused
+ * by 4K page then we don't handle that yet.
+ */
+static int do_kern_rmp_fault(unsigned long address, unsigned long hw_error_code)
+{
+	unsigned long spa, ref_pfn, pfn, pfninc = 1;
+	pte_t *kpte, *pbase;
+	struct page *base;
+	pgprot_t ref_prot;
+	int i, level;
+
+	kpte = lookup_address(address, &level);
+	if (!kpte || pte_none(*kpte))
+		return 1;
+
+	switch(level) {
+	case PG_LEVEL_4K:
+		return set_page_shared(address, pte_pfn(*kpte) << PAGE_SHIFT);
+	case PG_LEVEL_2M:
+		ref_prot = pmd_pgprot(*(pmd_t *)kpte);
+		/*
+		 * Clear PSE (aka _PAGE_PAT) and move
+		 * PAT bit to correct position.
+		 */
+		ref_prot = pgprot_large_2_4k(ref_prot);
+		ref_pfn = pmd_pfn(*(pmd_t *)kpte);
+		spa = (ref_pfn << PAGE_SHIFT) + (address & ~PMD_MASK);
+		break;
+	case PG_LEVEL_1G:
+		ref_prot = pud_pgprot(*(pud_t *)kpte);
+		ref_pfn = pud_pfn(*(pud_t *)kpte);
+		pfninc = PMD_PAGE_SIZE >> PAGE_SHIFT;
+		spa = (ref_pfn << PAGE_SHIFT) + (address & ~PUD_MASK);
+		/*
+		 * Clear the PSE flags if the PRESENT flag is not set
+		 * otherwise pmd_present/pmd_huge will return true
+		 * even on a non present pmd.
+		 */
+		if (!(pgprot_val(ref_prot) & _PAGE_PRESENT))
+			pgprot_val(ref_prot) &= ~_PAGE_PSE;
+		break;
+	default:
+		return 1;
+	}
+
+	ref_prot = pgprot_clear_protnone_bits(ref_prot);
+
+	base = alloc_page(GFP_ATOMIC);
+	if (!base) {
+		pr_alert("%s: failed to allocate new pte\n", __func__);
+		return 1;
+	}
+
+	pbase = page_address(base);
+
+	pfn = ref_pfn;
+	for (i = 0; i < PTRS_PER_PTE; i++, pfn += pfninc) {
+		set_pte(pbase, pfn_pte(pfn, ref_prot));
+		pbase++;
+	}
+
+	set_pte_atomic(kpte, mk_pte(base, __pgprot(_KERNPG_TABLE)));
+
+	/* FIXME: flush causes IPI and we can't send IPI in interrupt context */
+	//__flush_tlb_all();
+
+	return 0;
+}
 #ifdef CONFIG_X86_32
 static inline pmd_t *vmalloc_sync_one(pgd_t *pgd, unsigned long address)
 {
@@ -1329,6 +1467,12 @@ do_kern_addr_fault(struct pt_regs *regs, unsigned long hw_error_code,
 	/* kprobes don't want to hook the spurious faults: */
 	if (kprobe_page_fault(regs, X86_TRAP_PF))
 		return;
+
+	/* If RMP fault then handle it */
+	if (hw_error_code & X86_PF_SNP_RMP) {
+		if (!do_kern_rmp_fault(address, hw_error_code))
+			return;
+	}
 
 	/*
 	 * Note, despite being a "bad area", there are quite a few

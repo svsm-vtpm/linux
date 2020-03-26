@@ -540,6 +540,10 @@ static inline int rmp_entry_page_size(struct rmp_entry *v)
 struct rmpupdate_entry {
 	u64 gpa;
 	u8 assigned;
+
+#define RMP_PG_SIZE_4K	0
+#define RMP_PG_SIZE_2M	1
+
 	u8 pagesize;
 	u8 immutable;
 	u8 rsvd;
