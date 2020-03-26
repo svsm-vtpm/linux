@@ -2378,6 +2378,11 @@ static int svm_create_vcpu(struct kvm_vcpu *vcpu)
 		if (!vmsa_page)
 			goto free_page4;
 
+		if (sev_snp_guest(svm->vcpu.kvm)) {
+			if (set_memory_4k((unsigned long)page_address(vmsa_page), 1))
+				goto free_page5;
+		}
+
 		ghcb_page = alloc_page(GFP_KERNEL);
 		if (!ghcb_page)
 			goto free_page5;
@@ -2473,6 +2478,14 @@ static void svm_free_vcpu(struct kvm_vcpu *vcpu)
 		 */
 		page_to_flush = (u64)svm->vmsa | sev->asid;
 		wrmsrl(MSR_AMD64_VM_PAGE_FLUSH, page_to_flush);
+
+		/*
+		 * If this SNP guest then VMSA was added in the RMP table,
+		 * be sure to remove it from the RMP table before returning
+		 * the page back to the system.
+		 */
+		if (sev_snp_guest(vcpu->kvm))
+			snp_rmpupdate_clear(__pa(svm->vmsa));
 
 		__free_page(virt_to_page(svm->vmsa));
 
@@ -8222,6 +8235,110 @@ e_free:
 	return ret;
 }
 
+static int snp_launch_update_vmsa(struct kvm *kvm, struct kvm_sev_cmd *argp)
+{
+	struct kvm_sev_info *sev = &to_kvm_svm(kvm)->sev_info;
+	struct sev_data_snp_launch_update *data;
+	int i, ret;
+
+	data = kzalloc(sizeof(*data), GFP_KERNEL_ACCOUNT);
+	if (!data)
+		return -ENOMEM;
+
+	for (i = 0; i < kvm->created_vcpus; i++) {
+		struct vcpu_svm *svm = to_svm(kvm->vcpus[i]);
+		struct rmpupdate_entry e = {};
+
+		data->gctx_paddr = __sme_page_pa(sev->snp_context);
+		data->address = __sme_pa(svm->vmsa);
+		data->page_type = SNP_PAGE_TYPE_VMSA;
+
+		/* add to the RMP table */
+		e.assigned = 1;
+		e.immutable = 1;
+		e.asid = sev->asid;
+		e.gpa = -1;
+		ret = snp_rmpupdate_set(__pa(svm->vmsa), &e);
+		if (ret) {
+			pr_err("SNP: failed to add VMSA %d to RMP table error=%d\n", i, ret);
+			goto e_free;
+		}
+
+		/* issue the SNP command to encrypt the VMSA */
+		ret = __sev_issue_cmd(argp->sev_fd, SEV_CMD_SNP_LAUNCH_UPDATE,
+				data, &argp->error);
+		if (ret) {
+			snp_page_reclaim(__pa(svm->vmsa));
+			goto e_free;
+		}
+
+		svm->vcpu.arch.vmsa_encrypted = true;
+	}
+
+e_free:
+	kfree(data);
+	return ret;
+}
+
+static int snp_launch_finish(struct kvm *kvm, struct kvm_sev_cmd *argp)
+{
+	struct kvm_sev_info *sev = &to_kvm_svm(kvm)->sev_info;
+	struct sev_data_snp_launch_finish *data;
+	void *id_block = NULL, *id_auth = NULL;
+	struct kvm_sev_snp_launch_finish params;
+	int ret;
+
+	if (!sev_snp_guest(kvm))
+		return -ENOTTY;
+
+	if (!sev->snp_context)
+		return -EINVAL;
+
+	if (copy_from_user(&params, (void __user *)(uintptr_t)argp->data, sizeof(params)))
+		return -EFAULT;
+
+	if ((ret = snp_launch_update_vmsa(kvm, argp)))
+		return ret;
+
+	data = kzalloc(sizeof(*data), GFP_KERNEL_ACCOUNT);
+	if (!data)
+		return -ENOMEM;
+
+	if (params.id_block_en) {
+		id_block = psp_copy_user_blob(params.id_block_uaddr, KVM_SEV_SNP_ID_BLOCK_SIZE);
+		if (IS_ERR(id_block)) {
+			ret = PTR_ERR(id_block);
+			goto e_free;
+		}
+
+		data->id_block_en = 1;
+		data->id_block_paddr = __sme_pa(id_block);
+	}
+
+	if (params.auth_key_en) {
+		id_auth = psp_copy_user_blob(params.id_auth_uaddr, KVM_SEV_SNP_ID_AUTH_SIZE);
+		if (IS_ERR(id_auth)) {
+			ret = PTR_ERR(id_auth);
+			goto e_free_1;
+		}
+
+		data->auth_key_en = 1;
+		data->id_auth_paddr = __sme_pa(id_auth);
+	}
+
+	data->gctx_paddr = __sme_page_pa(sev->snp_context);
+	ret = sev_issue_cmd(kvm, SEV_CMD_SNP_LAUNCH_FINISH, data, &argp->error);
+
+	kfree(id_auth);
+
+e_free_1:
+	kfree(id_block);
+e_free:
+	kfree(data);
+	return ret;
+}
+
+
 static int svm_mem_enc_op(struct kvm *kvm, void __user *argp)
 {
 	struct kvm_sev_cmd sev_cmd;
@@ -8277,6 +8394,9 @@ static int svm_mem_enc_op(struct kvm *kvm, void __user *argp)
 		break;
 	case KVM_SEV_SNP_LAUNCH_UPDATE:
 		r = snp_launch_update(kvm, &sev_cmd);
+		break;
+	case KVM_SEV_SNP_LAUNCH_FINISH:
+		r = snp_launch_finish(kvm, &sev_cmd);
 		break;
 	default:
 		r = -EINVAL;
