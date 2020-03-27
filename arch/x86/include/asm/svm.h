@@ -158,6 +158,8 @@ struct __attribute__ ((__packed__)) vmcb_control_area {
 #define SVM_NESTED_CTL_SEV_ENABLE	BIT(1)
 #define SVM_NESTED_CTL_SEV_ES_ENABLE	BIT(2)
 
+#define SVM_SEV_FEATURE_SNP_ENABLE	BIT(0)
+
 struct __attribute__ ((__packed__)) vmcb_seg {
 	u16 selector;
 	u16 attrib;
@@ -235,7 +237,10 @@ struct __attribute__ ((__packed__)) vmcb_save_area {
 	u64 sw_exit_info_1;
 	u64 sw_exit_info_2;
 	u64 sw_scratch;
-	u8 reserved_11[56];
+	u64 sev_features;
+	u64 vintr_ctrl;
+	u64 guest_exit_code;
+	u8 reserved_11[32];
 	u64 xcr0;
 	u8 valid_bitmap[16];
 	u64 x87_state_gpa;

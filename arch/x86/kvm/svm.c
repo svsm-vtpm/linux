@@ -1790,6 +1790,10 @@ static void init_vmcb(struct vcpu_svm *svm)
 			save->xcr0 = 7;
 			sev_es_init_vmcb(svm);
 		}
+
+		if (sev_snp_guest(svm->vcpu.kvm)) {
+			save->sev_features |= SVM_SEV_FEATURE_SNP_ENABLE;
+		}
 	}
 
 	mark_all_dirty(svm->vmcb);
