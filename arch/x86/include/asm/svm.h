@@ -284,6 +284,13 @@ struct __attribute__ ((__packed__)) vmcb_save_area {
 #define GHCB_MSR_TERM_REASON_POS	16
 #define GHCB_MSR_TERM_REASON_MASK	0xff
 
+#define GHCB_MSR_SNP_MEM_OP_PRIVATE_REQ		0x006
+#define GHCB_MSR_SNP_MEM_OP_SHARED_REQ		0x007
+#define GHCB_MSR_SNP_MEM_OP_GFN_RSHIFT		12
+#define GHCB_MSR_SNP_MEM_OP_GFN_MASK		0xFFFFFFFFFF
+#define GHCB_MSR_SNP_MEM_OP_PSIZE_RSHIFT	63
+#define GHCB_MSR_SNP_MEM_OP_PSIZE_MASK		0x1
+
 struct __attribute__ ((__packed__)) ghcb {
 	struct vmcb_save_area save;
 
@@ -395,6 +402,23 @@ static const u32 host_save_user_msrs[] = {
 };
 
 #define NR_HOST_SAVE_USER_MSRS ARRAY_SIZE(host_save_user_msrs)
+
+struct vmgexit_mem_op_hdr {
+	uint64_t count	: 32;
+	uint64_t rsvd	: 32;
+};
+
+struct vmgexit_mem_op {
+	uint64_t npages		: 12;
+	uint64_t gfn		: 40;
+	uint64_t cmd		: 3;
+	uint64_t rsvd		: 8;
+	uint64_t rmp_pagesize	: 1;
+};
+
+
+#define MEM_OP_SNP_SHARED		0x1
+#define MEM_OP_SNP_PRIVATE		0x2
 
 struct kvm_sev_info {
 	bool active;		/* SEV enabled guest */
@@ -578,6 +602,8 @@ static inline int snp_rmpupdate_clear(u64 spa)
 
 #define RMP_KVM_PT_LEVEL(x) ((x == RMP_PG_SIZE_4K) ? PT_PAGE_TABLE_LEVEL : PT_DIRECTORY_LEVEL)
 #define KVM_RMP_PT_LEVEL(x) ((x == PT_PAGE_TABLE_LEVEL) ? RMP_PG_SIZE_4K :  RMP_PG_SIZE_2M)
+#define RMP_LEVEL_X86_PSIZE(x)       (x == RMP_PG_SIZE_4K ? PAGE_SIZE : PMD_SIZE)
+
 
 static inline int snp_psmash(u64 spa)
 {

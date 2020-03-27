@@ -5396,6 +5396,157 @@ static bool setup_vmgexit_scratch(struct vcpu_svm *svm, bool sync, u64 len)
 	return true;
 }
 
+static int gfn_to_spa(struct kvm_vcpu *vcpu, gfn_t gfn, int *level, u64 *spa)
+{
+	struct kvm_memory_slot *slot;
+	unsigned long hva;
+	pte_t *pte;
+
+	slot = gfn_to_memslot(vcpu->kvm, gfn);
+	if (!slot || slot->flags & KVM_MEMSLOT_INVALID)
+		return 1;
+
+	/*
+	 * Note, using the already-retrieved memslot and __gfn_to_hva_memslot()
+	 * is not solely for performance, it's also necessary to avoid the
+	 * "writable" check in __gfn_to_hva_many(), which will always fail on
+	 * read-only memslots due to gfn_to_hva() assuming writes. In this
+	 * case we are not writing to the page, we just want to get the
+	 * system physical address of the gfn.
+	 */
+	hva = __gfn_to_hva_memslot(slot, gfn);
+
+	pte = lookup_address_in_mm(vcpu->kvm->mm, hva, level);
+	if (unlikely(!pte))
+		return 1;
+
+	switch (*level) {
+	case PG_LEVEL_4K: *spa = pte_pfn(*pte) << PAGE_SHIFT; break;
+	case PG_LEVEL_2M: *spa = pmd_pfn(*(pmd_t*)pte) << PAGE_SHIFT; break;
+	case PG_LEVEL_1G: *spa = pud_pfn(*(pud_t*)pte) << PAGE_SHIFT; break;
+	default: return 1;
+	}
+
+	if (*level > PG_LEVEL_4K) {
+		u64 mask;
+
+		mask = KVM_PAGES_PER_HPAGE(*level) - KVM_PAGES_PER_HPAGE(*level - 1);
+		*spa |= (gfn & mask) << PAGE_SHIFT;
+	}
+
+	return 0;
+}
+
+static int snp_mark_pages_private_shared(struct kvm_vcpu *vcpu, gfn_t gfn,
+					unsigned int npages, int level, int mode)
+{
+	struct kvm_sev_info *sev = &to_kvm_svm(vcpu->kvm)->sev_info;
+	gpa_t gpa, gpa_end, next_gpa;
+	unsigned int i = 0, rc;
+
+	if (!sev_snp_guest(vcpu->kvm))
+		return -EINVAL;
+
+	gpa = gfn_to_gpa(gfn);
+	gpa_end = gpa + (npages * RMP_LEVEL_X86_PSIZE(level));
+
+	trace_printk("mode %d gpa 0x%llx - 0x%llx\n", mode, gpa, gpa_end);
+
+	for (; gpa < gpa_end; gpa = next_gpa, i++) {
+		struct rmpupdate_entry e = {};
+		int host_level;
+		u64 spa;
+
+		rc = gfn_to_spa(vcpu, gpa_to_gfn(gpa), &host_level, &spa);
+		if (rc)
+			break;
+
+		if (mode == MEM_OP_SNP_SHARED) {
+			rc = snp_rmpupdate_clear(spa);
+		} else {
+			/*
+			 * We cannot use the requested level if its greather than host
+			 * backed level. In that case, we use the host page size in the
+			 * RMP table.
+			 */
+			if (KVM_RMP_PT_LEVEL(level) > host_level)
+				level = KVM_RMP_PT_LEVEL(host_level);
+
+			e.asid = sev->asid;
+			e.gpa = gpa;
+			e.pagesize = level;
+			e.assigned = 1;
+
+			rc = snp_rmpupdate_set(spa, &e);
+		}
+		if (rc) {
+			pr_err("SNP: failed to update RMP entry mode=%s asid=%d gpa=0x%llx level %d"
+				" spa 0x%llx error_code=%d\n", mode == MEM_OP_SNP_SHARED ? "shared" : "private",
+				sev->asid, gpa, level, spa, rc);
+			snp_print_rmpentry(spa);
+			break;
+		}
+
+		next_gpa = gpa + RMP_LEVEL_X86_PSIZE(level);
+	}
+
+	return i;
+}
+
+static int snp_mark_pages_shared(struct kvm_vcpu *vcpu, gfn_t gfn, unsigned int npages, int psize)
+{
+	return snp_mark_pages_private_shared(vcpu, gfn, npages, psize, MEM_OP_SNP_SHARED);
+}
+
+static int snp_mark_pages_private(struct kvm_vcpu *vcpu, gfn_t gfn, unsigned int npages, int psize)
+{
+	return snp_mark_pages_private_shared(vcpu, gfn, npages, psize, MEM_OP_SNP_PRIVATE);
+}
+
+static int __handle_snp_mem_op(struct kvm_vcpu *vcpu, struct vmgexit_mem_op *entry)
+{
+	switch (entry->cmd) {
+	case MEM_OP_SNP_SHARED:
+		return snp_mark_pages_shared(vcpu, entry->gfn, entry->npages, entry->rmp_pagesize);
+	case MEM_OP_SNP_PRIVATE:
+		return snp_mark_pages_private(vcpu, entry->gfn, entry->npages, entry->rmp_pagesize);
+	default:
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static int handle_snp_mem_op(struct vcpu_svm *svm, uint8_t *data)
+{
+	struct vmgexit_mem_op_hdr *hdr;
+	struct vmgexit_mem_op *entry;
+	unsigned int i, nentries;
+
+	hdr = (struct vmgexit_mem_op_hdr *)data;
+	entry = (struct vmgexit_mem_op *)(data + sizeof(*hdr));
+	nentries = hdr->count;
+
+	for (i = 0; i < nentries; i++) {
+		int ret;
+
+		ret = __handle_snp_mem_op(&svm->vcpu, entry);
+		if (ret < 0)
+			return -EINVAL;
+
+		/* decrement the number of pages processed */
+		entry->npages -= ret;
+
+		/* if all the pages in the entry is done then decrement the count */
+		if (!entry->npages)
+			hdr->count--;
+
+		entry++;
+	}
+
+	return 0;
+ }
+
 static int handle_vmgexit_msr_protocol(struct vcpu_svm *svm)
 {
 	struct vmcb_control_area *control = &svm->vmcb->control;
@@ -5450,6 +5601,24 @@ static int handle_vmgexit_msr_protocol(struct vcpu_svm *svm)
 				  GHCB_MSR_INFO_MASK,
 				  GHCB_MSR_INFO_POS);
 		break;
+	}
+	case GHCB_MSR_SNP_MEM_OP_SHARED_REQ:
+	case GHCB_MSR_SNP_MEM_OP_PRIVATE_REQ: {
+		gfn_t gfn;
+		bool psize;
+
+		gfn = ((control->ghcb_gpa >> GHCB_MSR_SNP_MEM_OP_GFN_RSHIFT) &
+				GHCB_MSR_SNP_MEM_OP_GFN_MASK);
+		psize = (control->ghcb_gpa >> GHCB_MSR_SNP_MEM_OP_PSIZE_RSHIFT) &
+				GHCB_MSR_SNP_MEM_OP_PSIZE_MASK;
+
+		if (ghcb_info == GHCB_MSR_SNP_MEM_OP_PRIVATE_REQ)
+			snp_mark_pages_private(&svm->vcpu, gfn, 1, psize);
+		else
+			snp_mark_pages_shared(&svm->vcpu, gfn, 1, psize);
+
+		break;
+
 	}
 	case GHCB_MSR_TERM_REQ: {
 		u64 reason_set, reason_code;
@@ -5552,6 +5721,15 @@ static int handle_vmgexit(struct vcpu_svm *svm)
 							 SVM_EVTINJ_TYPE_EXEPT |
 							 SVM_EVTINJ_VALID;
 		}
+
+		ret = 1;
+		break;
+	}
+	case SVM_VMGEXIT_SNP_MEM_OP: {
+		if (!setup_vmgexit_scratch(svm, true, sizeof(ghcb->save.sw_scratch)))
+			break;
+
+		handle_snp_mem_op(svm, svm->ghcb_sa);
 
 		ret = 1;
 		break;
