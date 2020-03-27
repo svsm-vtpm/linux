@@ -5359,6 +5359,34 @@ static int handle_vmgexit(struct vcpu_svm *svm)
 					svm->vmcb->control.exit_info_2,
 					svm->ghcb_sa);
 		break;
+	case SVM_VMGEXIT_AP_HLT_LOOP:
+		svm->vcpu.arch.wait_for_sipi = true;
+		ret = kvm_emulate_halt(&svm->vcpu);
+		break;
+	case SVM_VMGEXIT_AP_JUMP_TABLE: {
+		struct kvm_sev_info *sev = &to_kvm_svm(svm->vcpu.kvm)->sev_info;
+
+		switch (svm->vmcb->control.exit_info_1) {
+		case 0:
+			/* Set AP jump table address */
+			sev->ap_jump_table = svm->vmcb->control.exit_info_2;
+			break;
+		case 1:
+			/* Get AP jump table address */
+			ghcb->save.sw_exit_info_2 = sev->ap_jump_table;
+			break;
+		default:
+			pr_err("svm: vmgexit: unsupported AP jump table request - exit_info_1=%#llx\n",
+			       svm->vmcb->control.exit_info_1);
+			svm->ghcb->save.sw_exit_info_1 = 1;
+			svm->ghcb->save.sw_exit_info_2 = X86_TRAP_UD |
+							 SVM_EVTINJ_TYPE_EXEPT |
+							 SVM_EVTINJ_VALID;
+		}
+
+		ret = 1;
+		break;
+	}
 	case SVM_VMGEXIT_UNSUPPORTED_EVENT:
 		pr_err("vmgexit: unsupported event - exit_info_1=%#llx, exit_info_2=%#llx\n",
 		       svm->vmcb->control.exit_info_1,
@@ -5485,6 +5513,9 @@ static void reload_tss(struct kvm_vcpu *vcpu)
 static void pre_sev_es_run(struct vcpu_svm *svm)
 {
 	u64 ghcb_gpa;
+
+	WARN(svm->vcpu.arch.wait_for_sipi,
+	     "about to run vcpu, but still waiting for sipi\n");
 
 	if (!svm->ghcb_active)
 		return;

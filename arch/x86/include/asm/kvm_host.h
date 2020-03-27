@@ -824,6 +824,8 @@ struct kvm_vcpu_arch {
 
 	/* SEV-ES support */
 	bool vmsa_encrypted;
+	bool first_sipi_done;	/* First SIPI has been done */
+	bool wait_for_sipi;	/* In AP_HLT_LOOP, waiting for SIPI */
 };
 
 struct kvm_lpage_info {
