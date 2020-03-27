@@ -329,6 +329,7 @@ struct __attribute__ ((__packed__)) vmcb {
 #define INTERCEPT_CR8_WRITE	(16 + 8)
 
 #define TRAP_CR0_WRITE		(48 + 0)
+#define TRAP_CR4_WRITE		(48 + 4)
 
 #define INTERCEPT_DR0_READ	0
 #define INTERCEPT_DR1_READ	1
