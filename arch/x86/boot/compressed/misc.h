@@ -99,6 +99,7 @@ static inline void choose_random_location(unsigned long input,
 
 #ifdef CONFIG_X86_64
 extern int set_page_decrypted(unsigned long address);
+extern int set_page_encrypted(unsigned long address);
 extern unsigned char _pgtable[];
 #endif
 
@@ -144,5 +145,9 @@ extern struct desc_ptr boot_idt_desc;
 void boot_pf_handler(void);
 void boot_stage1_vc_handler(void);
 void boot_stage2_vc_handler(void);
+
+#ifdef CONFIG_AMD_MEM_ENCRYPT
+extern void sev_es_exit_ghcb(void);
+#endif
 
 #endif /* BOOT_COMPRESSED_MISC_H */

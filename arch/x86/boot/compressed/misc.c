@@ -320,6 +320,10 @@ static void parse_elf(void *output)
 	free(phdrs);
 }
 
+#ifdef CONFIG_AMD_MEM_ENCRYPT
+#include "sev-snp.c"
+#endif
+
 /*
  * The compressed kernel image (ZO), has been moved so that its position
  * is against the end of the buffer used to hold the uncompressed kernel
@@ -441,6 +445,15 @@ asmlinkage __visible void *extract_kernel(void *rmode, memptr heap,
 	parse_elf(output);
 	handle_relocations(output, output_len, virt_addr);
 	debug_putstr("done.\nBooting the kernel.\n");
+
+#ifdef CONFIG_AMD_MEM_ENCRYPT
+	/*
+	 * From here onwards we don't expect any #VC until the decompressed kernel
+	 * installs new IDT.
+	 */
+	sev_es_exit_ghcb();
+#endif
+
 	return output;
 }
 

@@ -109,6 +109,22 @@ static bool sev_es_setup_ghcb(void)
 	return true;
 }
 
+void sev_es_exit_ghcb(void)
+{
+	u64 val;
+
+	/* if we don't have boot_ghcb setup then we are not ES guest */
+	if (!boot_ghcb)
+		return;
+
+	val = sev_es_rd_ghcb_msr();
+
+	if ((val & 0xfff) != 0)
+		return;
+
+	set_page_encrypted(val);
+}
+
 void boot_vc_handler(struct pt_regs *regs, unsigned long exit_code)
 {
 	struct es_em_ctxt ctxt;

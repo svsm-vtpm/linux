@@ -27,10 +27,16 @@
 #include <asm/pgtable.h>
 #include <asm/trap_defs.h>
 #include <asm/cmpxchg.h>
+
 /* Use the static base for this part of the boot process */
 #undef __PAGE_OFFSET
 #define __PAGE_OFFSET __PAGE_OFFSET_BASE
 #include "../../mm/ident_map.c"
+
+/* Provides set_memory_{private,shared}() */
+#ifdef CONFIG_AMD_MEM_ENCRYPT
+#include "sev-snp.c"
+#endif
 
 #ifdef CONFIG_X86_5LEVEL
 unsigned int __pgtable_l5_enabled;
@@ -221,8 +227,8 @@ static void clflush_page(unsigned long address)
 		clflush(cl);
 }
 
-static int __set_page_decrypted(struct x86_mapping_info *info,
-				unsigned long address)
+static int __set_page_enc_dec(struct x86_mapping_info *info,
+			      unsigned long address, bool enc)
 {
 	unsigned long scratch, *target;
 	pgd_t *pgdp = (pgd_t *)top_level_pgt;
@@ -230,6 +236,7 @@ static int __set_page_decrypted(struct x86_mapping_info *info,
 	pud_t *pudp;
 	pmd_t *pmdp;
 	pte_t *ptep, pte;
+	unsigned long paddr;
 
 	/*
 	 * First make sure there is a PMD mapping for 'address'.
@@ -261,13 +268,27 @@ static int __set_page_decrypted(struct x86_mapping_info *info,
 	if (!ptep)
 		return -ENOMEM;
 
-	/* Clear encryption flag and write new pte */
-	pte = pte_clear_flags(*ptep, _PAGE_ENC);
+	/* change the encryption flag and write new pte */
+	if (enc)
+		pte = pte_set_flags(*ptep, _PAGE_ENC);
+	else
+		pte = pte_clear_flags(*ptep, _PAGE_ENC);
+
 	set_pte(ptep, pte);
 
 	/* Flush TLB to map the page unencrypted */
 	write_cr3(top_level_pgt);
 
+#ifdef CONFIG_AMD_MEM_ENCRYPT
+	if (sev_snp_enabled()) {
+		paddr = pte_pfn(*ptep) << PAGE_SHIFT;
+
+		if (enc)
+			sev_snp_set_memory_private(paddr, PAGE_SIZE);
+		else
+			sev_snp_set_memory_shared(paddr, PAGE_SIZE);
+	}
+#endif
 	/*
 	 * Changing encryption attributes of a page requires to flush it from
 	 * the caches.
@@ -279,7 +300,12 @@ static int __set_page_decrypted(struct x86_mapping_info *info,
 
 int set_page_decrypted(unsigned long address)
 {
-	return __set_page_decrypted(&mapping_info, address);
+	return __set_page_enc_dec(&mapping_info, address, false);
+}
+
+int set_page_encrypted(unsigned long address)
+{
+	return __set_page_enc_dec(&mapping_info, address, true);
 }
 
 static void pf_error(unsigned long error_code, unsigned long address,
