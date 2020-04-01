@@ -15,6 +15,7 @@
 #include <linux/kernel.h>
 #include <linux/mm.h>
 #include <linux/xarray.h>
+#include <linux/debugfs.h>
 
 #include <asm/trap_defs.h>
 #include <asm/realmode.h>
@@ -37,6 +38,9 @@ struct sev_es_cpuid_cache_entry {
 
 static struct xarray sev_es_cpuid_cache;
 static bool __ro_after_init sev_es_cpuid_cache_initialized;
+static atomic_t sev_es_cpuid_cache_entries = ATOMIC_INIT(0);
+static atomic_t sev_es_cpuid_cache_hits = ATOMIC_INIT(0);
+static struct dentry *sev_es_debugfs_dir;
 
 /* For early boot hypervisor communication in SEV-ES enabled guests */
 struct ghcb boot_ghcb_page __bss_decrypted __aligned(PAGE_SIZE);
@@ -669,6 +673,8 @@ static bool sev_es_check_cpuid_cache(struct es_em_ctxt *ctxt)
 	if (!cache_entry)
 		return false;
 
+	atomic_inc(&sev_es_cpuid_cache_hits);
+
 	ctxt->regs->ax = cache_entry->eax;
 	ctxt->regs->bx = cache_entry->ebx;
 	ctxt->regs->cx = cache_entry->ecx;
@@ -695,6 +701,10 @@ static void sev_es_add_cpuid_cache(struct es_em_ctxt *ctxt)
 		/* Ignore insertion errors */
 		ret = xa_insert(&sev_es_cpuid_cache, ctxt->cpuid_cache_index,
 				cache_entry, GFP_ATOMIC);
+		if (!ret) {
+			printk("*** DEBUG: cpuid entry cached: %#018lx\n", ctxt->cpuid_cache_index);
+			atomic_inc(&sev_es_cpuid_cache_entries);
+		}
 	}
 }
 
@@ -1107,4 +1117,11 @@ fail:
 
 	while (true)
 		halt();
+}
+
+void sev_es_debugfs(void)
+{
+	sev_es_debugfs_dir = debugfs_create_dir("sev-es", NULL);
+	debugfs_create_atomic_t("cpuid-cache-hits", 0600, sev_es_debugfs_dir, &sev_es_cpuid_cache_hits);
+	debugfs_create_atomic_t("cpuid-cache-entries", 0600, sev_es_debugfs_dir, &sev_es_cpuid_cache_entries);
 }

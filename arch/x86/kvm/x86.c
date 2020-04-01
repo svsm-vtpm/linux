@@ -9568,6 +9568,7 @@ void kvm_vcpu_deliver_sipi_vector(struct kvm_vcpu *vcpu, u8 vector)
 			/*TODO: Make sure vCPU is in VMGEXIT processor stop loop */
 			vcpu->arch.wait_for_sipi = false;
 			vcpu->arch.mp_state = KVM_MP_STATE_RUNNABLE;
+			vcpu->arch.run_count = 0;
 		} else {
 			vcpu->arch.first_sipi_done = true;
 		}

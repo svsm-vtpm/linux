@@ -826,6 +826,8 @@ struct kvm_vcpu_arch {
 	bool vmsa_encrypted;
 	bool first_sipi_done;	/* First SIPI has been done */
 	bool wait_for_sipi;	/* In AP_HLT_LOOP, waiting for SIPI */
+
+	unsigned long run_count;
 };
 
 struct kvm_lpage_info {

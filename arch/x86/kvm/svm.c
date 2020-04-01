@@ -276,6 +276,10 @@ module_param(sev_snp, int, 0444);
 static bool __read_mostly dump_invalid_vmcb = 0;
 module_param(dump_invalid_vmcb, bool, 0644);
 
+/* enable/disable VMCB dump debug support */
+static int dump_all_vmcbs = false;
+module_param(dump_all_vmcbs, int, 0644);
+
 static u8 rsm_ins_bytes[] = "\x0f\xaa";
 
 static void svm_set_cr0(struct kvm_vcpu *vcpu, unsigned long cr0);
@@ -293,6 +297,9 @@ static void snp_print_rmpentry(u64 spa);
 static void snp_read_rmpentry(u64 spa, struct rmp_entry *e);
 
 static void snp_free_context_page(struct page *page);
+static void snp_print_rmpentry(u64 spa);
+static void snp_read_rmpentry(u64 spa, struct rmp_entry *ret);
+static int snp_page_reclaim(unsigned long spa);
 
 enum {
 	VMCB_INTERCEPTS, /* Intercept vectors, TSC offset,
@@ -328,6 +335,14 @@ static unsigned int min_sev_asid;
 static unsigned long *sev_asid_bitmap;
 static unsigned long *sev_reclaim_asid_bitmap;
 static void *rmp_table_vaddr;
+
+static void dump_vmcb(struct kvm_vcpu *vcpu);
+
+static void dump_ghcb(struct kvm_vcpu *vcpu);
+static void dump_ghcb_sw(struct kvm_vcpu *vcpu);
+static void dump_ghcb_scratch_string(struct kvm_vcpu *vcpu);
+static void dump_ghcb_scratch_binary(struct kvm_vcpu *vcpu);
+static void dump_ghcb_valid_bitmap(struct kvm_vcpu *vcpu);
 
 static inline bool svm_sev_enabled(void)
 {
@@ -1681,6 +1696,8 @@ static void init_vmcb(struct vcpu_svm *svm)
 	control->msrpm_base_pa = __sme_set(__pa(svm->msrpm));
 	control->int_ctl = V_INTR_MASKING_MASK;
 
+	save->dbgctl = 1;
+
 	init_seg(&save->es);
 	init_seg(&save->ss);
 	init_seg(&save->ds);
@@ -2082,6 +2099,16 @@ static void sev_vm_destroy(struct kvm *kvm)
 	struct kvm_sev_info *sev = &to_kvm_svm(kvm)->sev_info;
 	struct list_head *head = &sev->regions_list;
 	struct list_head *pos, *q;
+	unsigned int i;
+
+	for (i = 0; i < kvm->created_vcpus; i++) {
+		struct kvm_vcpu *vcpu = kvm->vcpus[i];
+
+		if (dump_all_vmcbs) {
+			printk("*** DEBUG: %s:%u:%s - vcpu%u before destroy\n", __FILE__, __LINE__, __func__, vcpu->vcpu_id);
+			dump_vmcb(vcpu);
+		}
+	}
 
 	if (!sev_guest(kvm))
 		return;
@@ -2969,12 +2996,39 @@ static int pf_interception(struct vcpu_svm *svm)
 			svm->vmcb->control.insn_len);
 }
 
+#define X86_PF_SNP_RMP (1ul << 31)
+static int svm_rmp_fault(struct vcpu_svm *svm, u64 fault_address, u64 error_code)
+{
+	struct kvm_vcpu *vcpu = &svm->vcpu;
+	kvm_pfn_t pfn;
+
+	pr_alert("RMP fault_address 0x%llx error_code 0x%llx\n", fault_address, error_code);
+
+	/* find the pfn for the given gfn */
+	pfn = gfn_to_pfn(vcpu->kvm, gpa_to_gfn(fault_address));
+	if (is_error_noslot_pfn(pfn)) {
+		pr_alert("%s: failed to find pfn for gpa 0x%llx\n", __func__, pfn);
+		goto exit;
+	}
+
+	pr_err("%s: gpa 0x%llx pfn 0x%llx\n", __func__, fault_address, pfn);
+	snp_print_rmpentry(pfn << PAGE_SHIFT);
+
+exit:
+	kvm_make_request(KVM_REQ_TRIPLE_FAULT, &svm->vcpu);
+	return 1;
+}
+
 static int npf_interception(struct vcpu_svm *svm)
 {
 	u64 fault_address = __sme_clr(svm->vmcb->control.exit_info_2);
 	u64 error_code = svm->vmcb->control.exit_info_1;
 
 	trace_kvm_page_fault(fault_address, error_code);
+
+	if (error_code & X86_PF_SNP_RMP)
+		return svm_rmp_fault(svm, fault_address, error_code);
+
 	return kvm_mmu_page_fault(&svm->vcpu, fault_address, error_code,
 			static_cpu_has(X86_FEATURE_DECODEASSISTS) ?
 			svm->vmcb->control.insn_bytes : NULL,
@@ -5185,14 +5239,11 @@ static void dump_vmcb(struct kvm_vcpu *vcpu)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
 	struct vmcb_control_area *control = &svm->vmcb->control;
-	struct vmcb_save_area *save = get_vmsa(svm);
+	struct vmcb_save_area *save;
+	char buffer[sizeof(control->insn_bytes) * 4], *bufptr;
+	int i, buflen;
 
-	if (!dump_invalid_vmcb) {
-		pr_warn_ratelimited("set kvm_amd.dump_invalid_vmcb=1 to dump internal KVM state.\n");
-		return;
-	}
-
-	pr_err("VMCB Control Area:\n");
+	pr_err("vCPU%u (run_count=%lu) VMCB Control Area:\n", vcpu->vcpu_id, vcpu->arch.run_count);
 	pr_err("%-20s%04x\n", "cr_read:", control->intercept_cr & 0xffff);
 	pr_err("%-20s%04x\n", "cr_write:", control->intercept_cr >> 16);
 	pr_err("%-20s%04x\n", "dr_read:", control->intercept_dr & 0xffff);
@@ -5223,9 +5274,83 @@ static void dump_vmcb(struct kvm_vcpu *vcpu)
 	pr_err("%-20s%08x\n", "event_inj_err:", control->event_inj_err);
 	pr_err("%-20s%lld\n", "virt_ext:", control->virt_ext);
 	pr_err("%-20s%016llx\n", "next_rip:", control->next_rip);
+	pr_err("%-20s%hhd\n", "insn_len:", control->insn_len);
+	bufptr = buffer;
+	buflen = sizeof(buffer);
+	for (i = 0; i < sizeof(control->insn_bytes); i++)
+		bufptr += sprintf(bufptr, "%02hhx ", control->insn_bytes[i]);
+	pr_err("%-20s%s\n", "insn_bytes:", buffer);
 	pr_err("%-20s%016llx\n", "avic_backing_page:", control->avic_backing_page);
 	pr_err("%-20s%016llx\n", "avic_logical_id:", control->avic_logical_id);
 	pr_err("%-20s%016llx\n", "avic_physical_id:", control->avic_physical_id);
+
+	if (vcpu->arch.vmsa_encrypted) {
+		struct kvm_sev_info *sev = &to_kvm_svm(vcpu->kvm)->sev_info;
+		struct page *save_page;
+		int ret, error;
+
+		printk("*** DEBUG %s:%u:%s - Using SEV_CMD_DBG_DECRYPT to decrypt VMSA\n", __FILE__, __LINE__, __func__);
+
+		save_page = alloc_page(GFP_KERNEL);
+		if (!save_page) {
+			return;
+		}
+		save = page_address(save_page);
+
+		wbinvd_on_all_cpus();
+
+		if (sev_snp_guest(vcpu->kvm)) {
+			struct rmpupdate_entry e = {};
+			struct sev_data_snp_dbg *dbg;
+
+			e.assigned = true;
+			e.immutable = true;
+
+			if (set_memory_4k((unsigned long)save, 1))
+				pr_err("*** DEBUG: failed to split the region as a 4k\n");
+			else {
+				if (snp_rmpupdate_set(__pa(save), &e))
+					pr_err("*** DEBUG: failed to make firmware page\n");
+			}
+
+			dbg = kzalloc(sizeof(*dbg), GFP_KERNEL);
+			if (!dbg)
+				return;
+
+			dbg->gctx_paddr = __sme_page_pa(sev->snp_context);;
+			dbg->dst_addr = __psp_pa(save);
+			dbg->src_addr = svm->vmcb->control.vmsa_pa;
+			dbg->len = PAGE_SIZE;
+
+			ret = sev_guest_snp_dbg_decrypt(dbg, &error);
+
+			snp_page_reclaim(__pa(save));
+			kfree(dbg);
+
+		} else {
+			struct sev_data_dbg *dbg;
+
+			dbg = kzalloc(sizeof(*dbg), GFP_KERNEL);
+			if (!dbg)
+				return;
+
+			dbg->handle = sev->handle;
+			dbg->dst_addr = __psp_pa(save);
+			dbg->src_addr = svm->vmcb->control.vmsa_pa;
+			dbg->len = PAGE_SIZE;
+
+			ret = sev_guest_dbg_decrypt(dbg, &error);
+
+			kfree(dbg);
+		}
+
+		if (ret)
+			printk("*** DEBUG %s:%u:%s - SEV_CMD_DBG_DECRYPT error, ret=%d, error=%d\n", __FILE__, __LINE__, __func__, ret, error);
+
+	} else {
+		save = get_vmsa(svm);
+	}
+
 	pr_err("VMCB State Save Area:\n");
 	pr_err("%-5s s: %04x a: %04x l: %08x b: %016llx\n",
 	       "es:",
@@ -5296,6 +5421,209 @@ static void dump_vmcb(struct kvm_vcpu *vcpu)
 	pr_err("%-15s %016llx %-13s %016llx\n",
 	       "excp_from:", save->last_excp_from,
 	       "excp_to:", save->last_excp_to);
+
+	if (sev_es_guest(vcpu->kvm)) {
+		pr_err("%-15s %016llx %-13s %016llx\n",
+		       "rax:", save->rax, "rbx:", save->rbx);
+		pr_err("%-15s %016llx %-13s %016llx\n",
+		       "rcx:", save->rcx, "rdx:", save->rdx);
+		pr_err("%-15s %016llx %-13s %016llx\n",
+		       "rsi:", save->rsi, "rdi:", save->rdi);
+		pr_err("%-15s %016llx %-13s %016llx\n",
+		       "rbp:", save->rbp, "rsp:", save->rsp);
+		pr_err("%-15s %016llx %-13s %016llx\n",
+		       "r8:", save->r8, "r9:", save->r9);
+		pr_err("%-15s %016llx %-13s %016llx\n",
+		       "r10:", save->r10, "r11:", save->r11);
+		pr_err("%-15s %016llx %-13s %016llx\n",
+		       "r12:", save->r12, "r13:", save->r13);
+		pr_err("%-15s %016llx %-13s %016llx\n",
+		       "r14:", save->r14, "r15:", save->r15);
+
+		wbinvd_on_all_cpus();
+
+		__free_page(virt_to_page(save));
+	} else {
+		pr_err("%-15s %016llx %-13s %016lx\n",
+		       "rax:", save->rax, "rbx:", vcpu->arch.regs[VCPU_REGS_RBX]);
+		pr_err("%-15s %016lx %-13s %016lx\n",
+		       "rcx:", vcpu->arch.regs[VCPU_REGS_RCX], "rdx:", vcpu->arch.regs[VCPU_REGS_RDX]);
+		pr_err("%-15s %016lx %-13s %016lx\n",
+		       "rsi:", vcpu->arch.regs[VCPU_REGS_RSI], "rdi:", vcpu->arch.regs[VCPU_REGS_RDI]);
+		pr_err("%-15s %016lx %-13s %016llx\n",
+		       "rbp:", vcpu->arch.regs[VCPU_REGS_RBP], "rsp:", save->rsp);
+		pr_err("%-15s %016lx %-13s %016lx\n",
+		       "r8:", vcpu->arch.regs[VCPU_REGS_R8], "r9:", vcpu->arch.regs[VCPU_REGS_R9]);
+		pr_err("%-15s %016lx %-13s %016lx\n",
+		       "r10:", vcpu->arch.regs[VCPU_REGS_R10], "r11:", vcpu->arch.regs[VCPU_REGS_R11]);
+		pr_err("%-15s %016lx %-13s %016lx\n",
+		       "r12:", vcpu->arch.regs[VCPU_REGS_R12], "r13:", vcpu->arch.regs[VCPU_REGS_R13]);
+		pr_err("%-15s %016lx %-13s %016lx\n",
+		       "r14:", vcpu->arch.regs[VCPU_REGS_R14], "r15:", vcpu->arch.regs[VCPU_REGS_R15]);
+	}
+}
+
+static void dump_ghcb_scratch_binary(struct kvm_vcpu *vcpu)
+{
+	struct vcpu_svm *svm = to_svm(vcpu);
+	unsigned int len = svm->vmcb->control.exit_info_1;
+
+	setup_vmgexit_scratch(svm, false, len);
+
+	pr_err("*** GUEST DEBUG: info_1=%#llx, info_2=%#llx - %s\n",
+	       svm->vmcb->control.exit_info_1, svm->vmcb->control.exit_info_2,
+	       svm->ghcb_sa ? "sw_scratch print_hex_dump" : "sw_scratch is NULL");
+
+	if (svm->ghcb_sa)
+		print_hex_dump(KERN_ERR, "*** GUEST DEBUG: ", DUMP_PREFIX_OFFSET, 32, 1,
+			       svm->ghcb_sa, svm->ghcb_sa_len, 1);
+}
+
+static void dump_ghcb_scratch_string(struct kvm_vcpu *vcpu)
+{
+	struct vcpu_svm *svm = to_svm(vcpu);
+
+	setup_vmgexit_scratch(svm, false, sizeof(svm->ghcb->shared_buffer));
+
+	pr_err("*** GUEST DEBUG: %s", svm->ghcb_sa ? (char *)svm->ghcb_sa : "sw_scratch is NULL\n");
+}
+
+static void dump_ghcb_sw(struct kvm_vcpu *vcpu)
+{
+	struct vcpu_svm *svm = to_svm(vcpu);
+	struct ghcb *ghcb = svm->ghcb;
+	struct vmcb_save_area *save = &ghcb->save;
+
+	pr_err("*** DEBUG: ghcb_gpa=%#018llx, sw_exit_code=%#018llx, sw_exit_info_1=%#018llx, sw_exit_info2=%#018llx, sw_scratch=%#018llx\n",
+		svm->vmcb->control.ghcb_gpa,
+		save->sw_exit_code,
+		save->sw_exit_info_1, save->sw_exit_info_2,
+		save->sw_scratch);
+}
+
+static void dump_ghcb_valid_bitmap(struct kvm_vcpu *vcpu)
+{
+	struct vcpu_svm *svm = to_svm(vcpu);
+	struct ghcb *ghcb = svm->ghcb;
+	struct vmcb_save_area *save = &ghcb->save;
+	unsigned int i;
+	char buf[256], *buf_pos;
+
+	buf_pos = buf;
+	for (i = 0; i < sizeof(save->valid_bitmap); i++)
+		buf_pos += sprintf(buf_pos, "%02hhx ", save->valid_bitmap[i]);
+
+	pr_err("%-15s %s\n",
+	       "valid_bitmap:", buf);
+}
+
+static void dump_ghcb(struct kvm_vcpu *vcpu)
+{
+	struct vcpu_svm *svm = to_svm(vcpu);
+	struct ghcb *ghcb = svm->ghcb;
+	struct vmcb_save_area *save = &ghcb->save;
+
+	pr_err("%-20s%u\n", "vCPU:", vcpu->vcpu_id);
+	pr_err("%-20s%016llx\n", "GHCB Area:", svm->vmcb->control.ghcb_gpa);
+	pr_err("%-5s s: %04x a: %04x l: %08x b: %016llx\n",
+	       "es:",
+	       save->es.selector, save->es.attrib,
+	       save->es.limit, save->es.base);
+	pr_err("%-5s s: %04x a: %04x l: %08x b: %016llx\n",
+	       "cs:",
+	       save->cs.selector, save->cs.attrib,
+	       save->cs.limit, save->cs.base);
+	pr_err("%-5s s: %04x a: %04x l: %08x b: %016llx\n",
+	       "ss:",
+	       save->ss.selector, save->ss.attrib,
+	       save->ss.limit, save->ss.base);
+	pr_err("%-5s s: %04x a: %04x l: %08x b: %016llx\n",
+	       "ds:",
+	       save->ds.selector, save->ds.attrib,
+	       save->ds.limit, save->ds.base);
+	pr_err("%-5s s: %04x a: %04x l: %08x b: %016llx\n",
+	       "fs:",
+	       save->fs.selector, save->fs.attrib,
+	       save->fs.limit, save->fs.base);
+	pr_err("%-5s s: %04x a: %04x l: %08x b: %016llx\n",
+	       "gs:",
+	       save->gs.selector, save->gs.attrib,
+	       save->gs.limit, save->gs.base);
+	pr_err("%-5s s: %04x a: %04x l: %08x b: %016llx\n",
+	       "gdtr:",
+	       save->gdtr.selector, save->gdtr.attrib,
+	       save->gdtr.limit, save->gdtr.base);
+	pr_err("%-5s s: %04x a: %04x l: %08x b: %016llx\n",
+	       "ldtr:",
+	       save->ldtr.selector, save->ldtr.attrib,
+	       save->ldtr.limit, save->ldtr.base);
+	pr_err("%-5s s: %04x a: %04x l: %08x b: %016llx\n",
+	       "idtr:",
+	       save->idtr.selector, save->idtr.attrib,
+	       save->idtr.limit, save->idtr.base);
+	pr_err("%-5s s: %04x a: %04x l: %08x b: %016llx\n",
+	       "tr:",
+	       save->tr.selector, save->tr.attrib,
+	       save->tr.limit, save->tr.base);
+	pr_err("cpl:            %d                efer:         %016llx\n",
+		save->cpl, save->efer);
+	pr_err("%-15s %016llx %-13s %016llx\n",
+	       "cr0:", save->cr0, "cr2:", save->cr2);
+	pr_err("%-15s %016llx %-13s %016llx\n",
+	       "cr3:", save->cr3, "cr4:", save->cr4);
+	pr_err("%-15s %016llx %-13s %016llx\n",
+	       "dr6:", save->dr6, "dr7:", save->dr7);
+	pr_err("%-15s %016llx %-13s %016llx\n",
+	       "rip:", save->rip, "rflags:", save->rflags);
+	pr_err("%-15s %016llx %-13s %016llx\n",
+	       "rsp:", save->rsp, "rax:", save->rax);
+	pr_err("%-15s %016llx %-13s %016llx\n",
+	       "star:", save->star, "lstar:", save->lstar);
+	pr_err("%-15s %016llx %-13s %016llx\n",
+	       "cstar:", save->cstar, "sfmask:", save->sfmask);
+	pr_err("%-15s %016llx %-13s %016llx\n",
+	       "kernel_gs_base:", save->kernel_gs_base,
+	       "sysenter_cs:", save->sysenter_cs);
+	pr_err("%-15s %016llx %-13s %016llx\n",
+	       "sysenter_esp:", save->sysenter_esp,
+	       "sysenter_eip:", save->sysenter_eip);
+	pr_err("%-15s %016llx %-13s %016llx\n",
+	       "gpat:", save->g_pat, "dbgctl:", save->dbgctl);
+	pr_err("%-15s %016llx %-13s %016llx\n",
+	       "br_from:", save->br_from, "br_to:", save->br_to);
+	pr_err("%-15s %016llx %-13s %016llx\n",
+	       "excp_from:", save->last_excp_from,
+	       "excp_to:", save->last_excp_to);
+
+	pr_err("%-15s %016llx %-13s %016llx\n",
+	       "rax:", save->rax, "rbx:", save->rbx);
+	pr_err("%-15s %016llx %-13s %016llx\n",
+	       "rcx:", save->rcx, "rdx:", save->rdx);
+	pr_err("%-15s %016llx %-13s %016llx\n",
+	       "rsi:", save->rsi, "rdi:", save->rdi);
+	pr_err("%-15s %016llx %-13s %016llx\n",
+	       "rbp:", save->rbp, "rsp:", save->rsp);
+	pr_err("%-15s %016llx %-13s %016llx\n",
+	       "r8:", save->r8, "r9:", save->r9);
+	pr_err("%-15s %016llx %-13s %016llx\n",
+	       "r10:", save->r10, "r11:", save->r11);
+	pr_err("%-15s %016llx %-13s %016llx\n",
+	       "r12:", save->r12, "r13:", save->r13);
+	pr_err("%-15s %016llx %-13s %016llx\n",
+	       "r14:", save->r14, "r15:", save->r15);
+
+	pr_err("%-15s %016llx\n",
+	       "sw_exit_code:", save->sw_exit_code);
+	pr_err("%-15s %016llx %-18s %016llx\n",
+	       "sw_exit_info_1:", save->sw_exit_info_1, "sw_exit_info_2:", save->sw_exit_info_2);
+	pr_err("%-15s %016llx\n",
+	       "sw_scratch:", save->sw_scratch);
+	pr_err("%-15s %hu\n",
+	       "vc_level:", ghcb->vc_level);
+	pr_err("%-15s %hu\n",
+	       "vmgexit_level:", ghcb->vmgexit_level);
+
+	dump_ghcb_valid_bitmap(vcpu);
 }
 
 static void svm_get_exit_info(struct kvm_vcpu *vcpu, u64 *info1, u64 *info2)
@@ -5547,6 +5875,8 @@ static int handle_vmgexit_msr_protocol(struct vcpu_svm *svm)
 	u64 ghcb_info;
 	int ret = 1;
 
+	svm->vmgexit_count++;
+
 	ghcb_info = control->ghcb_gpa & GHCB_MSR_INFO_MASK;
 
 	switch (ghcb_info) {
@@ -5624,6 +5954,7 @@ static int handle_vmgexit_msr_protocol(struct vcpu_svm *svm)
 	}
 		/* Fallthrough */
 	default:
+		dump_vmcb(&svm->vcpu);
 		ret = -EINVAL;
 	}
 
@@ -5643,6 +5974,7 @@ static int handle_vmgexit(struct vcpu_svm *svm)
 
 	if (!ghcb_gpa) {
 		WARN(1, "svm: vmgexit: GHCB_GPA is not set\n");
+		dump_vmcb(&svm->vcpu);
 		return -EINVAL;
 	}
 
@@ -5661,6 +5993,8 @@ static int handle_vmgexit(struct vcpu_svm *svm)
 	svm->vmcb->control.exit_code_hi = upper_32_bits(ghcb->save.sw_exit_code);
 	svm->vmcb->control.exit_info_1 = ghcb->save.sw_exit_info_1;
 	svm->vmcb->control.exit_info_2 = ghcb->save.sw_exit_info_2;
+	if (ghcb->save.sw_exit_code == SVM_VMGEXIT_UNSUPPORTED_EVENT)
+		dump_ghcb(&svm->vcpu);
 
 	ghcb->save.sw_exit_info_1 = 0;
 	ghcb->save.sw_exit_info_2 = 0;
@@ -5699,10 +6033,12 @@ static int handle_vmgexit(struct vcpu_svm *svm)
 		case 0:
 			/* Set AP jump table address */
 			sev->ap_jump_table = svm->vmcb->control.exit_info_2;
+			printk("*** DEBUG: %s - ap_jump_table set: %#llx\n", __func__, sev->ap_jump_table);
 			break;
 		case 1:
 			/* Get AP jump table address */
 			ghcb->save.sw_exit_info_2 = sev->ap_jump_table;
+			printk("*** DEBUG: %s - ap_jump_table get: %#llx\n", __func__, sev->ap_jump_table);
 			break;
 		default:
 			pr_err("svm: vmgexit: unsupported AP jump table request - exit_info_1=%#llx\n",
@@ -5725,6 +6061,35 @@ static int handle_vmgexit(struct vcpu_svm *svm)
 		ret = 1;
 		break;
 	}
+	case SVM_VMGEXIT_DEBUG_PRINT:
+		dump_ghcb_scratch_string(&svm->vcpu);
+
+		ret = 1;
+		break;
+	case SVM_VMGEXIT_DEBUG_PRINT_HEX:
+		dump_ghcb_scratch_binary(&svm->vcpu);
+
+		ret = 1;
+		break;
+	case SVM_VMGEXIT_DEBUG_EXIT_INFO:
+		ghcb->save.sw_exit_info_1 = svm->vmcb->control.exit_info_1;
+		ghcb->save.sw_exit_info_2 = svm->vmcb->control.exit_info_2;
+		dump_ghcb_sw(&svm->vcpu);
+
+		ghcb->save.sw_exit_info_1 = 0;
+		ghcb->save.sw_exit_info_2 = 0;
+
+		ret = 1;
+		break;
+	case SVM_VMGEXIT_DEBUG_COUNT_PRINT:
+		svm->vmgexit_count--;
+		pr_err("vmgexit: vCPU%u vmgexit_count=%lu\n", svm->vcpu.vcpu_id, svm->vmgexit_count);
+		ret = 1;
+		break;
+	case SVM_VMGEXIT_DEBUG_COUNT_RESET:
+		svm->vmgexit_count = 0;
+		ret = 1;
+		break;
 	case SVM_VMGEXIT_UNSUPPORTED_EVENT:
 		pr_err("vmgexit: unsupported event - exit_info_1=%#llx, exit_info_2=%#llx\n",
 		       svm->vmcb->control.exit_info_1,
@@ -6549,6 +6914,8 @@ static void svm_cancel_injection(struct kvm_vcpu *vcpu)
 static void svm_vcpu_run(struct kvm_vcpu *vcpu)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
+
+	svm->vcpu.arch.run_count++;
 
 	if (!sev_es_guest(svm->vcpu.kvm)) {
 		svm_rax_write(svm, vcpu->arch.regs[VCPU_REGS_RAX]);

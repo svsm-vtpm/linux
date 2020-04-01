@@ -44,6 +44,14 @@ static int psp_probe_timeout = 5;
 module_param(psp_probe_timeout, int, 0644);
 MODULE_PARM_DESC(psp_probe_timeout, " default timeout value, in seconds, during PSP device probe");
 
+static int tmr = 1;
+module_param(tmr, int, S_IWUSR | S_IRUGO);
+MODULE_PARM_DESC(tmr, " Allocate TMR if SEV-ES is supported (any non-zero value, default=1)");
+
+static int reset;
+module_param(reset, int, S_IWUSR | S_IRUGO);
+MODULE_PARM_DESC(reset, " Perform PLATFORM_RESET before INIT (any non-zero value)");
+
 static bool psp_dead;
 static int psp_timeout;
 
@@ -98,6 +106,7 @@ static int sev_wait_cmd_ioc(struct sev_device *sev,
 		return -ETIMEDOUT;
 
 	*reg = ioread32(sev->io_regs + sev->vdata->cmdresp_reg);
+	dev_dbg(sev->dev, "sev mailbox protocol resp: 0x%08x\n", *reg);
 
 	return 0;
 }
@@ -241,6 +250,7 @@ static int __sev_do_cmd_locked(int cmd, void *data, int *psp_ret)
 	reg = cmd;
 	reg <<= SEV_CMDRESP_CMD_SHIFT;
 	reg |= SEV_CMDRESP_IOC;
+	dev_dbg(sev->dev, "sev mailbox protocol  cmd: 0x%08x\n", reg);
 	iowrite32(reg, sev->io_regs + sev->vdata->cmdresp_reg);
 
 	/* wait for command completion */
@@ -316,6 +326,9 @@ static int __sev_platform_init_locked(int *error)
 	if (sev->legacy_inited && (sev->state == SEV_STATE_INIT))
 		return 0;
 
+	if (reset)
+		__sev_do_cmd_locked(SEV_CMD_FACTORY_RESET, NULL, error);
+
 	if (sev_es_tmr) {
 		u64 tmr_pa;
 
@@ -325,6 +338,7 @@ static int __sev_platform_init_locked(int *error)
 		 */
 		tmr_pa = __pa(sev_es_tmr);
 		tmr_pa = ALIGN(tmr_pa, SEV_ES_TMR_ALIGN);
+		printk("*** DEBUG: %s:%u:%s - TMR physical address=%#llx\n", __FILE__, __LINE__, __func__, tmr_pa);
 
 		sev->init_cmd_buf.flags |= SEV_INIT_FLAGS_SEV_ES;
 		sev->init_cmd_buf.tmr_address = tmr_pa;
@@ -1145,6 +1159,18 @@ int sev_snp_unsmash(unsigned long paddr, int *error)
 }
 EXPORT_SYMBOL_GPL(sev_snp_unsmash);
 
+int sev_guest_dbg_decrypt(struct sev_data_dbg *data, int *error)
+{
+	return sev_do_cmd(SEV_CMD_DBG_DECRYPT, data, error);
+}
+EXPORT_SYMBOL_GPL(sev_guest_dbg_decrypt);
+
+int sev_guest_snp_dbg_decrypt(struct sev_data_snp_dbg *data, int *error)
+{
+	return sev_do_cmd(SEV_CMD_SNP_DBG_DECRYPT, data, error);
+}
+EXPORT_SYMBOL_GPL(sev_guest_snp_dbg_decrypt);
+
 static void sev_exit(struct kref *ref)
 {
 	struct sev_misc_dev *misc_dev = container_of(ref, struct sev_misc_dev, refcount);
@@ -1308,10 +1334,12 @@ void sev_pci_init(void)
 		sev_get_api_version();
 
 	/* Obtain the TMR memory area for SEV-ES use */
-	if (boot_cpu_has(X86_FEATURE_SEV_ES)) {
+	if (tmr && boot_cpu_has(X86_FEATURE_SEV_ES)) {
 		sev_es_tmr = kzalloc(SEV_ES_TMR_LEN, GFP_KERNEL);
 		if (!sev_es_tmr)
 			goto err;
+
+		printk("*** DEBUG: %s:%u:%s - SEV-ES TMR=%px, size=%#x\n", __FILE__, __LINE__, __func__, sev_es_tmr, SEV_ES_TMR_LEN);
 	}
 
 	dev_info(sev->dev, "SEV API:%d.%d build:%d\n", sev->api_major,

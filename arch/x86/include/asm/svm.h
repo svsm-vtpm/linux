@@ -296,7 +296,9 @@ struct __attribute__ ((__packed__)) ghcb {
 
 	u8 shared_buffer[2032];
 
-	u8 reserved_1[10];
+	u8 reserved_1[6];
+	u16 vc_level;
+	u16 vmgexit_level;
 	u16 protocol_version;	/* negotiated SEV-ES/GHCB protocol version */
 	u32 ghcb_usage;
 };
@@ -545,6 +547,8 @@ struct vcpu_svm {
 	u64 ghcb_sa_len;
 	bool ghcb_sa_sync;
 	bool ghcb_sa_free;
+
+	unsigned long vmgexit_count;
 };
 
 #define __sme_page_pa(x) __sme_set(page_to_pfn(x) << PAGE_SHIFT)

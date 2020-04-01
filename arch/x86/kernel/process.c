@@ -850,9 +850,12 @@ void amd_e400_c1e_apic_setup(void)
 	}
 }
 
+extern void sev_es_debugfs(void);
 void __init arch_post_acpi_subsys_init(void)
 {
 	u32 lo, hi;
+
+	sev_es_debugfs();
 
 	if (!boot_cpu_has_bug(X86_BUG_AMD_E400))
 		return;
