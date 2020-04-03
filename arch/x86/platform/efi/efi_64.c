@@ -48,6 +48,7 @@
 #include <asm/realmode.h>
 #include <asm/time.h>
 #include <asm/pgalloc.h>
+#include <asm/sev-es.h>
 
 /*
  * We allocate runtime services regions top-down, starting from -4G, i.e.
@@ -202,7 +203,7 @@ virt_to_phys_or_null_size(void *va, unsigned long size)
 
 int __init efi_setup_page_tables(unsigned long pa_memmap, unsigned num_pages)
 {
-	unsigned long pfn, text, pf;
+	unsigned long pfn, pa, pf;
 	struct page *page;
 	unsigned npages;
 	pgd_t *pgd = efi_mm.pgd;
@@ -240,6 +241,25 @@ int __init efi_setup_page_tables(unsigned long pa_memmap, unsigned num_pages)
 	}
 
 	/*
+	 * When SEV-ES is active, the GHCB as set by the kernel will be used
+	 * by firmware. Create a 1:1 unencrypted mapping for each GHCB.
+	 */
+	if (sev_es_active()) {
+		int cpu;
+
+		pf = _PAGE_NX | _PAGE_RW;
+		for_each_possible_cpu(cpu) {
+			pa = sev_es_get_ghcb_pa(cpu);
+			pfn = pa >> PAGE_SHIFT;
+
+			if (kernel_map_pages_in_pgd(pgd, pfn, pa, 1, pf)) {
+				pr_err("Failed to create 1:1 mapping for GHCB page\n");
+				return 1;
+			}
+		}
+	}
+
+	/*
 	 * When making calls to the firmware everything needs to be 1:1
 	 * mapped and addressable with 32-bit pointers. Map the kernel
 	 * text and allocate a new stack because we can't rely on the
@@ -257,11 +277,11 @@ int __init efi_setup_page_tables(unsigned long pa_memmap, unsigned num_pages)
 	efi_scratch.phys_stack = page_to_phys(page + 1); /* stack grows down */
 
 	npages = (__end_rodata_aligned - _text) >> PAGE_SHIFT;
-	text = __pa(_text);
-	pfn = text >> PAGE_SHIFT;
+	pa = __pa(_text);
+	pfn = pa >> PAGE_SHIFT;
 
 	pf = _PAGE_ENC;
-	if (kernel_map_pages_in_pgd(pgd, pfn, text, npages, pf)) {
+	if (kernel_map_pages_in_pgd(pgd, pfn, pa, npages, pf)) {
 		pr_err("Failed to map kernel text 1:1\n");
 		return 1;
 	}
