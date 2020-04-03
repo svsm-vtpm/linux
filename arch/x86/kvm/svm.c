@@ -2105,6 +2105,7 @@ static int svm_create_vcpu(struct kvm_vcpu *vcpu)
 	struct page *msrpm_pages;
 	struct page *hsave_page;
 	struct page *nested_msrpm_pages;
+	struct page *vmsa_page = NULL, *ghcb_page = NULL;
 	int err;
 
 	BUILD_BUG_ON(offsetof(struct vcpu_svm, vcpu) != 0);
@@ -2127,9 +2128,19 @@ static int svm_create_vcpu(struct kvm_vcpu *vcpu)
 	if (!hsave_page)
 		goto free_page3;
 
+	if (sev_es_guest(svm->vcpu.kvm)) {
+		vmsa_page = alloc_page(GFP_KERNEL);
+		if (!vmsa_page)
+			goto free_page4;
+
+		ghcb_page = alloc_page(GFP_KERNEL);
+		if (!ghcb_page)
+			goto free_page5;
+	}
+
 	err = avic_init_vcpu(svm);
 	if (err)
-		goto free_page4;
+		goto free_page6;
 
 	/* We initialize this flag to true to make sure that the is_running
 	 * bit would be set the first time the vcpu is loaded.
@@ -2148,6 +2159,15 @@ static int svm_create_vcpu(struct kvm_vcpu *vcpu)
 	svm->vmcb = page_address(page);
 	clear_page(svm->vmcb);
 	svm->vmcb_pa = __sme_set(page_to_pfn(page) << PAGE_SHIFT);
+
+	if (vmsa_page && ghcb_page) {
+		svm->vmsa = page_address(vmsa_page);
+		clear_page(svm->vmsa);
+
+		svm->ghcb = page_address(ghcb_page);
+		clear_page(svm->ghcb);
+	}
+
 	svm->asid_generation = 0;
 	init_vmcb(svm);
 
@@ -2156,6 +2176,12 @@ static int svm_create_vcpu(struct kvm_vcpu *vcpu)
 
 	return 0;
 
+free_page6:
+	if (ghcb_page)
+		__free_page(ghcb_page);
+free_page5:
+	if (vmsa_page)
+		__free_page(vmsa_page);
 free_page4:
 	__free_page(hsave_page);
 free_page3:
@@ -2186,6 +2212,27 @@ static void svm_free_vcpu(struct kvm_vcpu *vcpu)
 	 * vmcb page recorded as its current vmcb.
 	 */
 	svm_clear_current_vmcb(svm->vmcb);
+
+	if (sev_es_guest(vcpu->kvm)) {
+		struct kvm_sev_info *sev = &to_kvm_svm(vcpu->kvm)->sev_info;
+
+		if (vcpu->arch.vmsa_encrypted) {
+			u64 page_to_flush;
+
+			/*
+			 * The VMSA page was used by hardware to hold guest
+			 * encrypted state, be sure to flush it before returning
+			 * it to the system. This is done using the VM Page
+			 * Flush MSR (which takes the page virtual address and
+			 * guest ASID).
+			 */
+			page_to_flush = (u64)svm->vmsa | sev->asid;
+			wrmsrl(MSR_AMD64_VM_PAGE_FLUSH, page_to_flush);
+		}
+
+		__free_page(virt_to_page(svm->vmsa));
+		__free_page(virt_to_page(svm->ghcb));
+	}
 
 	__free_page(pfn_to_page(__sme_clr(svm->vmcb_pa) >> PAGE_SHIFT));
 	__free_pages(virt_to_page(svm->msrpm), MSRPM_ALLOC_ORDER);
@@ -7156,6 +7203,58 @@ find_enc_region(struct kvm *kvm, struct kvm_enc_region *range)
 	return NULL;
 }
 
+static bool svm_reg_read_override(struct kvm_vcpu *vcpu, enum kvm_reg reg)
+{
+	return sev_es_guest(vcpu->kvm);
+}
+
+static unsigned long svm_reg_read(struct kvm_vcpu *vcpu, enum kvm_reg reg)
+{
+	struct vmcb_save_area *vmsa;
+	unsigned int entry;
+	u64 *vmsa_reg;
+
+	entry = vcpu_to_vmsa_entry(reg);
+	if (entry == VMSA_REG_UNDEF)
+		return 0;
+
+	vmsa = get_vmsa(to_svm(vcpu));
+	vmsa_reg = (u64 *)vmsa;
+
+	return vmsa_reg[entry];
+}
+
+static bool svm_reg_write_override(struct kvm_vcpu *vcpu, enum kvm_reg reg,
+				   unsigned long val)
+{
+	return sev_es_guest(vcpu->kvm);
+}
+
+static void svm_reg_write(struct kvm_vcpu *vcpu, enum kvm_reg reg,
+			  unsigned long val)
+{
+	struct vmcb_save_area *vmsa;
+	struct vcpu_svm *svm;
+	unsigned int entry;
+	u64 *vmsa_reg;
+
+	entry = vcpu_to_vmsa_entry(reg);
+	if (entry == VMSA_REG_UNDEF)
+		return;
+
+	svm = to_svm(vcpu);
+	vmsa = get_vmsa(svm);
+	vmsa_reg = (u64 *)vmsa;
+
+	if (svm->vcpu.arch.vmsa_encrypted) {
+		unsigned int index = entry / 8;
+		unsigned int shift = entry % 8;
+
+		vmsa->valid_bitmap[index] |= BIT(shift);
+	}
+
+	vmsa_reg[entry] = val;
+}
 
 static int svm_unregister_enc_region(struct kvm *kvm,
 				     struct kvm_enc_region *range)
@@ -7422,10 +7521,19 @@ static struct kvm_x86_ops svm_x86_ops __ro_after_init = {
 	.need_emulation_on_page_fault = svm_need_emulation_on_page_fault,
 
 	.apic_init_signal_blocked = svm_apic_init_signal_blocked,
+
+	.reg_read_override = svm_reg_read_override,
+	.reg_read = svm_reg_read,
+	.reg_write_override = svm_reg_write_override,
+	.reg_write = svm_reg_write,
 };
 
 static int __init svm_init(void)
 {
+	BUILD_BUG_ON(sizeof(struct vmcb_control_area) != 1024);
+	BUILD_BUG_ON(sizeof(struct vmcb_save_area) != 2048);
+	BUILD_BUG_ON(sizeof(struct ghcb) != 4096);
+
 	return kvm_init(&svm_x86_ops, sizeof(struct vcpu_svm),
 			__alignof__(struct vcpu_svm), THIS_MODULE);
 }
