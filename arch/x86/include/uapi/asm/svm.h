@@ -205,6 +205,7 @@
 	{ SVM_EXIT_AVIC_UNACCELERATED_ACCESS,   "avic_unaccelerated_access" }, \
 	{ SVM_EXIT_VMGEXIT,	"vmgexit" }, \
 	{ SVM_EXIT_CR0_WRITE_TRAP, "write_cr0_trap" }, \
+	{ SVM_EXIT_CR4_WRITE_TRAP, "write_cr4_trap" }, \
 	{ SVM_EXIT_ERR,         "invalid_guest_state" }
 
 
