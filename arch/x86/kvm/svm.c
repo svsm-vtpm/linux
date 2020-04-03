@@ -4119,6 +4119,25 @@ static int cr_interception(struct vcpu_svm *svm)
 	return kvm_complete_insn_gp(&svm->vcpu, err);
 }
 
+static int cr_trap(struct vcpu_svm *svm)
+{
+	unsigned int cr;
+
+	cr = svm->vmcb->control.exit_code - SVM_EXIT_CR0_WRITE_TRAP;
+
+	switch (cr) {
+	case 0:
+		kvm_track_cr0(&svm->vcpu, svm->vmcb->control.exit_info_1);
+		break;
+	default:
+		WARN(1, "unhandled CR%d write trap", cr);
+		kvm_queue_exception(&svm->vcpu, UD_VECTOR);
+		return 1;
+	}
+
+	return kvm_complete_insn_gp(&svm->vcpu, 0);
+}
+
 static int dr_interception(struct vcpu_svm *svm)
 {
 	int reg, dr;
@@ -4921,6 +4940,7 @@ static int (*const svm_exit_handlers[])(struct vcpu_svm *svm) = {
 	[SVM_EXIT_AVIC_INCOMPLETE_IPI]		= avic_incomplete_ipi_interception,
 	[SVM_EXIT_AVIC_UNACCELERATED_ACCESS]	= avic_unaccelerated_access_interception,
 	[SVM_EXIT_VMGEXIT]			= handle_vmgexit,
+	[SVM_EXIT_CR0_WRITE_TRAP]		= cr_trap,
 };
 
 static void dump_vmcb(struct kvm_vcpu *vcpu)
