@@ -4805,6 +4805,8 @@ static int avic_unaccelerated_access_interception(struct vcpu_svm *svm)
 	return ret;
 }
 
+static int handle_vmgexit(struct vcpu_svm *svm);
+
 static int (*const svm_exit_handlers[])(struct vcpu_svm *svm) = {
 	[SVM_EXIT_READ_CR0]			= cr_interception,
 	[SVM_EXIT_READ_CR3]			= cr_interception,
@@ -4871,6 +4873,7 @@ static int (*const svm_exit_handlers[])(struct vcpu_svm *svm) = {
 	[SVM_EXIT_RSM]                          = rsm_interception,
 	[SVM_EXIT_AVIC_INCOMPLETE_IPI]		= avic_incomplete_ipi_interception,
 	[SVM_EXIT_AVIC_UNACCELERATED_ACCESS]	= avic_unaccelerated_access_interception,
+	[SVM_EXIT_VMGEXIT]			= handle_vmgexit,
 };
 
 static void dump_vmcb(struct kvm_vcpu *vcpu)
@@ -4910,6 +4913,7 @@ static void dump_vmcb(struct kvm_vcpu *vcpu)
 	pr_err("%-20s%lld\n", "nested_ctl:", control->nested_ctl);
 	pr_err("%-20s%016llx\n", "nested_cr3:", control->nested_cr3);
 	pr_err("%-20s%016llx\n", "avic_vapic_bar:", control->avic_vapic_bar);
+	pr_err("%-20s%016llx\n", "ghcb:", control->ghcb_gpa);
 	pr_err("%-20s%08x\n", "event_inj:", control->event_inj);
 	pr_err("%-20s%08x\n", "event_inj_err:", control->event_inj_err);
 	pr_err("%-20s%lld\n", "virt_ext:", control->virt_ext);
@@ -4995,6 +4999,68 @@ static void svm_get_exit_info(struct kvm_vcpu *vcpu, u64 *info1, u64 *info2)
 
 	*info1 = control->exit_info_1;
 	*info2 = control->exit_info_2;
+}
+
+static int handle_vmgexit_msr_protocol(struct vcpu_svm *svm)
+{
+	return -EINVAL;
+}
+
+static int handle_vmgexit(struct vcpu_svm *svm)
+{
+	struct ghcb *ghcb = svm->ghcb;
+	u64 ghcb_gpa;
+	int ret;
+
+	/* Validate the GHCB */
+	ghcb_gpa = svm->vmcb->control.ghcb_gpa;
+	if (ghcb_gpa & GHCB_MSR_INFO_MASK)
+		return handle_vmgexit_msr_protocol(svm);
+
+	if (!ghcb_gpa) {
+		WARN(1, "svm: vmgexit: GHCB_GPA is not set\n");
+		return -EINVAL;
+	}
+
+	if (kvm_read_guest(svm->vcpu.kvm, ghcb_gpa, ghcb, PAGE_SIZE)) {
+		/* Unable to copy GHCB from guest */
+		WARN(1, "svm: vmgexit: unable to copy GHCB from guest\n");
+		return -EINVAL;
+	}
+
+	svm->ghcb_active = true;
+
+	svm->vmcb->control.exit_code = lower_32_bits(ghcb->save.sw_exit_code);
+	svm->vmcb->control.exit_code_hi = upper_32_bits(ghcb->save.sw_exit_code);
+	svm->vmcb->control.exit_info_1 = ghcb->save.sw_exit_info_1;
+	svm->vmcb->control.exit_info_2 = ghcb->save.sw_exit_info_2;
+
+	ghcb->save.sw_exit_info_1 = 0;
+	ghcb->save.sw_exit_info_2 = 0;
+
+	ret = -EINVAL;
+	switch (ghcb->save.sw_exit_code) {
+	case SVM_VMGEXIT_UNSUPPORTED_EVENT:
+		pr_err("vmgexit: unsupported event - exit_info_1=%#llx, exit_info_2=%#llx\n",
+		       svm->vmcb->control.exit_info_1,
+		       svm->vmcb->control.exit_info_2);
+		break;
+	default:
+		if (ghcb->save.sw_exit_code >= ARRAY_SIZE(svm_exit_handlers) ||
+		    !svm_exit_handlers[ghcb->save.sw_exit_code]) {
+			WARN(1, "svm: vmgexit: unexpected exit reason 0x%llx\n",
+			     ghcb->save.sw_exit_code);
+			ghcb->save.sw_exit_info_1 = 1;
+			ghcb->save.sw_exit_info_2 = X86_TRAP_UD |
+						    SVM_EVTINJ_TYPE_EXEPT |
+						    SVM_EVTINJ_VALID;
+			return 1;
+		}
+
+		ret = svm_exit_handlers[ghcb->save.sw_exit_code](svm);
+	}
+
+	return ret;
 }
 
 static int handle_exit(struct kvm_vcpu *vcpu,
@@ -5097,10 +5163,29 @@ static void reload_tss(struct kvm_vcpu *vcpu)
 	load_TR_desc();
 }
 
+static void pre_sev_es_run(struct vcpu_svm *svm)
+{
+	u64 ghcb_gpa;
+
+	if (!svm->ghcb_active)
+		return;
+
+	ghcb_gpa = svm->vmcb->control.ghcb_gpa;
+	if (!ghcb_gpa || (ghcb_gpa & GHCB_MSR_INFO_MASK))
+		return;
+
+	kvm_write_guest(svm->vcpu.kvm, ghcb_gpa, svm->ghcb, PAGE_SIZE);
+
+	svm->ghcb_active = false;
+}
+
 static void pre_sev_run(struct vcpu_svm *svm, int cpu)
 {
 	struct svm_cpu_data *sd = per_cpu(svm_data, cpu);
 	int asid = sev_get_asid(svm->vcpu.kvm);
+
+	/* Perform any SEV-ES pre-run actions */
+	pre_sev_es_run(svm);
 
 	/* Assign the asid allocated with this SEV guest */
 	svm->vmcb->control.asid = asid;
