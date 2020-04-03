@@ -508,163 +508,179 @@ static inline struct vmcb_save_area *get_vmsa(struct vcpu_svm *svm)
 	return &svm->vmcb->save;
 }
 
-/* VMSA Accessor functions */
-
-#define DEFINE_VMSA_SEGMENT_ENTRY(field, entry, size)			\
-	static inline size						\
-	svm_##field##_read_##entry(struct vcpu_svm *svm)		\
-	{								\
-		return get_vmsa(svm)->field.entry;			\
-	}								\
-									\
-	static inline void						\
-	svm_##field##_write_##entry(struct vcpu_svm *svm,		\
-				     size value)			\
-	{								\
-		get_vmsa(svm)->field.entry = value;			\
-	}								\
-
-#define DEFINE_VMSA_SEGMENT_ACCESSOR(field)				\
-	DEFINE_VMSA_SEGMENT_ENTRY(field, selector, u16)			\
-	DEFINE_VMSA_SEGMENT_ENTRY(field, attrib, u16)			\
-	DEFINE_VMSA_SEGMENT_ENTRY(field, limit, u32)			\
-	DEFINE_VMSA_SEGMENT_ENTRY(field, base, u64)			\
-	static inline void						\
-	svm_##field##_write(struct vcpu_svm *svm,			\
-			     struct vmcb_seg *seg)			\
-	{								\
-		get_vmsa(svm)->field = *seg;				\
-	}
-
-DEFINE_VMSA_SEGMENT_ACCESSOR(cs)
-DEFINE_VMSA_SEGMENT_ACCESSOR(ds)
-DEFINE_VMSA_SEGMENT_ACCESSOR(es)
-DEFINE_VMSA_SEGMENT_ACCESSOR(fs)
-DEFINE_VMSA_SEGMENT_ACCESSOR(gs)
-DEFINE_VMSA_SEGMENT_ACCESSOR(ss)
-DEFINE_VMSA_SEGMENT_ACCESSOR(gdtr)
-DEFINE_VMSA_SEGMENT_ACCESSOR(idtr)
-DEFINE_VMSA_SEGMENT_ACCESSOR(ldtr)
-DEFINE_VMSA_SEGMENT_ACCESSOR(tr)
-
-#define DEFINE_VMSA_ACCESSOR(field, size)				\
-	static inline size						\
-	svm_##field##_read(struct vcpu_svm *svm)			\
-	{								\
-		return get_vmsa(svm)->field;				\
-	}								\
-									\
-	static inline void						\
-	svm_##field##_write(struct vcpu_svm *svm, size value)		\
-	{								\
-		get_vmsa(svm)->field = value;				\
-	}								\
-									\
-	static inline void						\
-	svm_##field##_and(struct vcpu_svm *svm, size value)		\
-	{								\
-		get_vmsa(svm)->field &= value;				\
-	}								\
-									\
-	static inline void						\
-	svm_##field##_or(struct vcpu_svm *svm, size value)		\
-	{								\
-		get_vmsa(svm)->field |= value;				\
-	}
-
-#define DEFINE_VMSA_U64_ACCESSOR(field)					\
-	DEFINE_VMSA_ACCESSOR(field, u64)
-
-#define DEFINE_VMSA_U8_ACCESSOR(field)					\
-	DEFINE_VMSA_ACCESSOR(field, u8)
-
-DEFINE_VMSA_U8_ACCESSOR(cpl)
-
-DEFINE_VMSA_U64_ACCESSOR(efer)
-DEFINE_VMSA_U64_ACCESSOR(cr0)
-DEFINE_VMSA_U64_ACCESSOR(cr2)
-DEFINE_VMSA_U64_ACCESSOR(cr3)
-DEFINE_VMSA_U64_ACCESSOR(cr4)
-DEFINE_VMSA_U64_ACCESSOR(dr6)
-DEFINE_VMSA_U64_ACCESSOR(dr7)
-DEFINE_VMSA_U64_ACCESSOR(rflags)
-DEFINE_VMSA_U64_ACCESSOR(rip)
-DEFINE_VMSA_U64_ACCESSOR(star)
-DEFINE_VMSA_U64_ACCESSOR(lstar)
-DEFINE_VMSA_U64_ACCESSOR(cstar)
-DEFINE_VMSA_U64_ACCESSOR(sfmask)
-DEFINE_VMSA_U64_ACCESSOR(kernel_gs_base)
-DEFINE_VMSA_U64_ACCESSOR(sysenter_cs)
-DEFINE_VMSA_U64_ACCESSOR(sysenter_esp)
-DEFINE_VMSA_U64_ACCESSOR(sysenter_eip)
-DEFINE_VMSA_U64_ACCESSOR(g_pat)
-DEFINE_VMSA_U64_ACCESSOR(dbgctl)
-DEFINE_VMSA_U64_ACCESSOR(br_from)
-DEFINE_VMSA_U64_ACCESSOR(br_to)
-DEFINE_VMSA_U64_ACCESSOR(last_excp_from)
-DEFINE_VMSA_U64_ACCESSOR(last_excp_to)
-DEFINE_VMSA_U64_ACCESSOR(rax)
-DEFINE_VMSA_U64_ACCESSOR(rsp)
-
-/* GHCB Accessor functions */
+/* VMSA / GHCB Accessor functions */
 
 #define DEFINE_GHCB_INDICES(field)					\
 	u16 idx = offsetof(struct vmcb_save_area, field) / 8;		\
 	u16 byte_idx  = idx / 8;					\
 	u16 bit_idx   = idx % 8;					\
-	BUILD_BUG_ON(byte_idx > ARRAY_SIZE(ghcb->save.valid_bitmap));
+	BUILD_BUG_ON(byte_idx > ARRAY_SIZE(vmsa->valid_bitmap));
 
-#define GHCB_SET_VALID(ghcb, field)					\
-	{								\
-		DEFINE_GHCB_INDICES(field)				\
-		(ghcb)->save.valid_bitmap[byte_idx] |= BIT(bit_idx);	\
-	}
-
-#define DEFINE_GHCB_SETTER(field)					\
+#define DEFINE_GHCB_VMSA_SEGMENT_ENTRY(field, entry, size)		\
 	static inline void						\
-	ghcb_set_##field(struct ghcb *ghcb, u64 value)			\
+	ghcb_set_##field##_##entry(struct ghcb *ghcb, size value)	\
 	{								\
-		GHCB_SET_VALID(ghcb, field)				\
-		(ghcb)->save.field = value;				\
-	}
-
-#define DEFINE_GHCB_ACCESSORS(field)					\
-	static inline bool ghcb_is_valid_##field(const struct ghcb *ghcb)	\
-	{								\
+		struct vmcb_save_area *vmsa = &((ghcb)->save);		\
 		DEFINE_GHCB_INDICES(field)				\
-		return !!((ghcb)->save.valid_bitmap[byte_idx]		\
-						& BIT(bit_idx));	\
+									\
+		vmsa->field.entry = value;				\
+		vmsa->valid_bitmap[byte_idx] |= BIT(bit_idx);		\
 	}								\
 									\
 	static inline void						\
-	ghcb_set_##field(struct ghcb *ghcb, u64 value)			\
+	svm_##field##_write_##entry(struct vcpu_svm *svm,		\
+				    size value)				\
 	{								\
-		GHCB_SET_VALID(ghcb, field)				\
-		(ghcb)->save.field = value;				\
+		struct vmcb_save_area *vmsa = get_vmsa(svm);		\
+									\
+		vmsa->field.entry = value;				\
+	}								\
+									\
+	static inline size						\
+	svm_##field##_read_##entry(struct vcpu_svm *svm)		\
+	{								\
+		struct vmcb_save_area *vmsa = get_vmsa(svm);		\
+									\
+		return vmsa->field.entry;				\
 	}
 
-DEFINE_GHCB_ACCESSORS(cpl)
-DEFINE_GHCB_ACCESSORS(rip)
-DEFINE_GHCB_ACCESSORS(rsp)
-DEFINE_GHCB_ACCESSORS(rax)
-DEFINE_GHCB_ACCESSORS(rcx)
-DEFINE_GHCB_ACCESSORS(rdx)
-DEFINE_GHCB_ACCESSORS(rbx)
-DEFINE_GHCB_ACCESSORS(rbp)
-DEFINE_GHCB_ACCESSORS(rsi)
-DEFINE_GHCB_ACCESSORS(rdi)
-DEFINE_GHCB_ACCESSORS(r8)
-DEFINE_GHCB_ACCESSORS(r9)
-DEFINE_GHCB_ACCESSORS(r10)
-DEFINE_GHCB_ACCESSORS(r11)
-DEFINE_GHCB_ACCESSORS(r12)
-DEFINE_GHCB_ACCESSORS(r13)
-DEFINE_GHCB_ACCESSORS(r14)
-DEFINE_GHCB_ACCESSORS(r15)
-DEFINE_GHCB_ACCESSORS(sw_exit_code)
-DEFINE_GHCB_ACCESSORS(sw_exit_info_1)
-DEFINE_GHCB_ACCESSORS(sw_exit_info_2)
-DEFINE_GHCB_ACCESSORS(sw_scratch)
-DEFINE_GHCB_ACCESSORS(xcr0)
+#define DEFINE_GHCB_VMSA_SEGMENT_ACCESSOR(field)			\
+	DEFINE_GHCB_VMSA_SEGMENT_ENTRY(field, selector, u16)		\
+	DEFINE_GHCB_VMSA_SEGMENT_ENTRY(field, attrib, u16)		\
+	DEFINE_GHCB_VMSA_SEGMENT_ENTRY(field, limit, u32)		\
+	DEFINE_GHCB_VMSA_SEGMENT_ENTRY(field, base, u64)		\
+	static inline void						\
+	ghcb_set_##field(struct ghcb *ghcb, struct vmcb_seg *seg)	\
+	{								\
+		struct vmcb_save_area *vmsa = &((ghcb)->save);		\
+		DEFINE_GHCB_INDICES(field)				\
+									\
+		vmsa->field = *seg;					\
+		vmsa->valid_bitmap[byte_idx] |= BIT(bit_idx);		\
+	}								\
+									\
+	static inline void						\
+	svm_##field##_write(struct vcpu_svm *svm, struct vmcb_seg *seg)	\
+	{								\
+		struct vmcb_save_area *vmsa = get_vmsa(svm);		\
+									\
+		vmsa->field = *seg;					\
+	}
+
+#define DEFINE_GHCB_VMSA_SIZE_ACCESSORS(field, size)			\
+	static inline bool						\
+	ghcb_is_valid_##field(const struct ghcb *ghcb)			\
+	{								\
+		const struct vmcb_save_area *vmsa = &((ghcb)->save);	\
+		DEFINE_GHCB_INDICES(field)				\
+									\
+		return !!(vmsa->valid_bitmap[byte_idx] & BIT(bit_idx));	\
+	}								\
+									\
+	static inline void						\
+	ghcb_set_##field(struct ghcb *ghcb, size value)			\
+	{								\
+		struct vmcb_save_area *vmsa = &((ghcb)->save);		\
+		DEFINE_GHCB_INDICES(field)				\
+									\
+		vmsa->field = value;					\
+		vmsa->valid_bitmap[byte_idx] |= BIT(bit_idx);		\
+	}								\
+									\
+	static inline size						\
+	svm_##field##_read(struct vcpu_svm *svm)			\
+	{								\
+		struct vmcb_save_area *vmsa = get_vmsa(svm);		\
+									\
+		return vmsa->field;					\
+	}								\
+									\
+	static inline void						\
+	svm_##field##_write(struct vcpu_svm *svm, size value)		\
+	{								\
+		struct vmcb_save_area *vmsa = get_vmsa(svm);		\
+									\
+		vmsa->field = value;					\
+	}								\
+									\
+	static inline void						\
+	svm_##field##_and(struct vcpu_svm *svm, size value)		\
+	{								\
+		struct vmcb_save_area *vmsa = get_vmsa(svm);		\
+									\
+		vmsa->field &= value;					\
+	}								\
+									\
+	static inline void						\
+	svm_##field##_or(struct vcpu_svm *svm, size value)		\
+	{								\
+		struct vmcb_save_area *vmsa = get_vmsa(svm);		\
+									\
+		vmsa->field |= value;					\
+	}
+
+#define DEFINE_GHCB_VMSA_ACCESSORS(field)				\
+	DEFINE_GHCB_VMSA_SIZE_ACCESSORS(field, u64)
+
+#define DEFINE_GHCB_VMSA_U8_ACCESSORS(field)				\
+	DEFINE_GHCB_VMSA_SIZE_ACCESSORS(field, u8)
+
+DEFINE_GHCB_VMSA_SEGMENT_ACCESSOR(cs)
+DEFINE_GHCB_VMSA_SEGMENT_ACCESSOR(ds)
+DEFINE_GHCB_VMSA_SEGMENT_ACCESSOR(es)
+DEFINE_GHCB_VMSA_SEGMENT_ACCESSOR(fs)
+DEFINE_GHCB_VMSA_SEGMENT_ACCESSOR(gs)
+DEFINE_GHCB_VMSA_SEGMENT_ACCESSOR(ss)
+DEFINE_GHCB_VMSA_SEGMENT_ACCESSOR(gdtr)
+DEFINE_GHCB_VMSA_SEGMENT_ACCESSOR(idtr)
+DEFINE_GHCB_VMSA_SEGMENT_ACCESSOR(ldtr)
+DEFINE_GHCB_VMSA_SEGMENT_ACCESSOR(tr)
+
+DEFINE_GHCB_VMSA_ACCESSORS(efer)
+DEFINE_GHCB_VMSA_ACCESSORS(cr0)
+DEFINE_GHCB_VMSA_ACCESSORS(cr2)
+DEFINE_GHCB_VMSA_ACCESSORS(cr3)
+DEFINE_GHCB_VMSA_ACCESSORS(cr4)
+DEFINE_GHCB_VMSA_ACCESSORS(dr6)
+DEFINE_GHCB_VMSA_ACCESSORS(dr7)
+DEFINE_GHCB_VMSA_ACCESSORS(rflags)
+DEFINE_GHCB_VMSA_ACCESSORS(star)
+DEFINE_GHCB_VMSA_ACCESSORS(lstar)
+DEFINE_GHCB_VMSA_ACCESSORS(cstar)
+DEFINE_GHCB_VMSA_ACCESSORS(sfmask)
+DEFINE_GHCB_VMSA_ACCESSORS(kernel_gs_base)
+DEFINE_GHCB_VMSA_ACCESSORS(sysenter_cs)
+DEFINE_GHCB_VMSA_ACCESSORS(sysenter_esp)
+DEFINE_GHCB_VMSA_ACCESSORS(sysenter_eip)
+DEFINE_GHCB_VMSA_ACCESSORS(g_pat)
+DEFINE_GHCB_VMSA_ACCESSORS(dbgctl)
+DEFINE_GHCB_VMSA_ACCESSORS(br_from)
+DEFINE_GHCB_VMSA_ACCESSORS(br_to)
+DEFINE_GHCB_VMSA_ACCESSORS(last_excp_from)
+DEFINE_GHCB_VMSA_ACCESSORS(last_excp_to)
+
+DEFINE_GHCB_VMSA_U8_ACCESSORS(cpl)
+DEFINE_GHCB_VMSA_ACCESSORS(rip)
+DEFINE_GHCB_VMSA_ACCESSORS(rax)
+DEFINE_GHCB_VMSA_ACCESSORS(rbx)
+DEFINE_GHCB_VMSA_ACCESSORS(rcx)
+DEFINE_GHCB_VMSA_ACCESSORS(rdx)
+DEFINE_GHCB_VMSA_ACCESSORS(rsp)
+DEFINE_GHCB_VMSA_ACCESSORS(rbp)
+DEFINE_GHCB_VMSA_ACCESSORS(rsi)
+DEFINE_GHCB_VMSA_ACCESSORS(rdi)
+DEFINE_GHCB_VMSA_ACCESSORS(r8)
+DEFINE_GHCB_VMSA_ACCESSORS(r9)
+DEFINE_GHCB_VMSA_ACCESSORS(r10)
+DEFINE_GHCB_VMSA_ACCESSORS(r11)
+DEFINE_GHCB_VMSA_ACCESSORS(r12)
+DEFINE_GHCB_VMSA_ACCESSORS(r13)
+DEFINE_GHCB_VMSA_ACCESSORS(r14)
+DEFINE_GHCB_VMSA_ACCESSORS(r15)
+DEFINE_GHCB_VMSA_ACCESSORS(sw_exit_code)
+DEFINE_GHCB_VMSA_ACCESSORS(sw_exit_info_1)
+DEFINE_GHCB_VMSA_ACCESSORS(sw_exit_info_2)
+DEFINE_GHCB_VMSA_ACCESSORS(sw_scratch)
+DEFINE_GHCB_VMSA_ACCESSORS(xcr0)
 
 #endif
