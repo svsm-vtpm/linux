@@ -57,6 +57,7 @@ struct ghcb_state {
 
 /* Runtime GHCB pointers */
 static struct ghcb __percpu *ghcb_page;
+static bool percpu_ghcb_initialized;
 
 /*
  * Mark the per-cpu GHCB as in-use to detect nested #VC exceptions.
@@ -326,6 +327,180 @@ static enum es_result vc_handle_msr(struct ghcb *ghcb, struct es_em_ctxt *ctxt)
 	return ret;
 }
 
+static int vmgexit_mem_op(struct ghcb *ghcb, uint8_t *ptr)
+{
+	ghcb_set_sw_scratch(ghcb, (u64)__pa(ptr));
+
+	return sev_es_ghcb_hv_call(ghcb, NULL, SVM_VMGEXIT_SNP_MEM_OP, 0, 0);
+}
+
+/*
+ * This function is used to issue early MEM_OP VMGEIXT to make the memory
+ * region private or shared.
+ */
+static int snp_set_memory_private_shared(unsigned long vaddr,
+					 unsigned int npages, int cmd)
+{
+	unsigned long vaddr_end, vaddr_next;
+	struct vmgexit_mem_op_hdr *hdr;
+	struct vmgexit_mem_op *data;
+	struct ghcb_state state;
+	uint8_t *shared_buf;
+	struct ghcb *ghcb;
+	int max_entries;
+
+	if (percpu_ghcb_initialized) {
+		ghcb = sev_es_get_ghcb(&state);
+	} else {
+		/* the boot_ghcb is marked as __initdata so we can't use boot_ghcb pointer */
+		ghcb = &boot_ghcb_page;
+	}
+
+	shared_buf = (uint8_t*)ghcb->shared_buffer;
+
+	hdr = (struct vmgexit_mem_op_hdr *)shared_buf;
+	data = (struct vmgexit_mem_op *)(shared_buf + sizeof(*hdr));
+
+	vc_ghcb_invalidate(ghcb);
+	memset(shared_buf, 0, sizeof(ghcb->shared_buffer));
+
+	vaddr_end = (vaddr & PAGE_MASK) + (npages * PAGE_SIZE);
+	max_entries = (sizeof(ghcb->shared_buffer) - sizeof(*hdr)) / sizeof(*data);
+
+	for (; vaddr_end > vaddr; vaddr = vaddr_next) {
+		unsigned int level = PG_LEVEL_4K;
+		unsigned long psize, pmask;
+
+		/* Buffer is full now, issue vmgexit and reset the header */
+		if (hdr->count == max_entries) {
+			if (vmgexit_mem_op(ghcb, shared_buf))
+				goto exit;
+
+			if (hdr->count)
+				goto exit;
+
+			data = (struct vmgexit_mem_op *)(shared_buf + sizeof(*hdr));
+			hdr->count = 0;
+		}
+
+		hdr->count++;
+		data->npages = 1;
+		data->gfn = __pa(vaddr) >> PAGE_SHIFT;
+		data->rmp_pagesize = 0; /* hardcode to 4K */
+		data->cmd = cmd;
+		data++;
+
+		pmask = page_level_mask(level);
+		psize = page_level_size(level);
+		vaddr_next = (vaddr & pmask) + psize;
+	}
+
+	/* Check if we need to issue the VMGEXIT */
+	if (hdr->count)
+		vmgexit_mem_op(ghcb, shared_buf);
+exit:
+	if (percpu_ghcb_initialized)
+		sev_es_put_ghcb(&state);
+
+	return hdr->count == 0 ? 0 : 1;
+}
+
+static inline int asm_pvalidate(unsigned long vaddr, int psize, int validate)
+{
+	int rc;
+
+	asm volatile(".byte 0xF2,0x0F,0x01,0xFF\n"
+		: "=a"(rc)
+		: "a"(vaddr), "c"(psize), "d"(validate) : "memory");
+
+	return rc;
+}
+
+int snp_set_memory_private(unsigned long vaddr, unsigned int npages)
+{
+	unsigned long vaddr_end;
+	int rc;
+
+	if (!sev_snp_active()) {
+		WARN_ON("SNP is not active\n");
+		return 1;
+	}
+
+	rc = snp_set_memory_private_shared(vaddr, npages, MEM_OP_SNP_PRIVATE);
+	if (rc)
+		return rc;
+
+
+	vaddr_end = vaddr + (npages * PAGE_SIZE);
+	for (; vaddr_end > vaddr; vaddr += PAGE_SIZE) {
+		rc = asm_pvalidate(vaddr, 0, 1);
+		if (rc) {
+			pr_alert("failed to validate vaddr 0x%lx (ret=%d)\n", vaddr, rc);
+			BUG();
+		}
+	}
+
+	return rc;
+}
+
+int snp_set_memory_shared(unsigned long vaddr, unsigned int npages)
+{
+	return snp_set_memory_private_shared(vaddr, npages, MEM_OP_SNP_SHARED);
+}
+
+int __init early_snp_set_memory_private(unsigned long paddr, unsigned int npages)
+{
+	unsigned long vaddr_end, vaddr;
+	int rc;
+
+	if (!sev_snp_active()) {
+		WARN_ON("SNP is not active\n");
+		return 1;
+	}
+
+	vaddr = (unsigned long)__va(paddr);
+	rc = snp_set_memory_private_shared(vaddr, npages, MEM_OP_SNP_PRIVATE);
+	if (rc)
+		return rc;
+
+
+	vaddr_end = vaddr + (npages * PAGE_SIZE);
+	for (; vaddr_end > vaddr; vaddr += PAGE_SIZE) {
+		rc = asm_pvalidate(vaddr, 0, 1);
+		if (rc) {
+			pr_alert("failed to validate vaddr 0x%lx (ret=%d)\n", vaddr, rc);
+			BUG();
+		}
+	}
+
+	return rc;
+}
+
+int __init early_snp_set_memory_shared(unsigned long paddr, unsigned int npages)
+{
+	unsigned long vaddr_end, vaddr;
+	int rc;
+
+	vaddr = (unsigned long)__va(paddr);
+	vaddr_end = vaddr + (npages * PAGE_SIZE);
+
+	if (!sev_snp_active()) {
+		WARN_ON("SNP is not active\n");
+		return 1;
+	}
+
+	for (; vaddr_end > vaddr; vaddr += PAGE_SIZE) {
+		rc = asm_pvalidate(vaddr, 0, 0);
+		if (rc) {
+			pr_alert("failed to invalidate vaddr 0x%lx (ret=%d)\n", vaddr, rc);
+			BUG();
+		}
+	}
+
+	return snp_set_memory_private_shared((unsigned long)__va(paddr), npages,
+			MEM_OP_SNP_SHARED);
+}
+
 /*
  * This function runs on the first #VC exception after the kernel
  * switched to virtual addresses.
@@ -424,6 +599,7 @@ void sev_es_init_ghcbs(void)
 
 	xa_init_flags(&sev_es_cpuid_cache, XA_FLAGS_LOCK_IRQ);
 	sev_es_cpuid_cache_initialized = true;
+	percpu_ghcb_initialized = true;
 }
 
 static void __init vc_early_vc_forward_exception(struct es_em_ctxt *ctxt)
