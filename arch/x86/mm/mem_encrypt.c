@@ -438,6 +438,23 @@ void __init mem_encrypt_free_decrypted_mem(void)
 	free_init_pages("unused decrypted", vaddr, vaddr_end);
 }
 
+const char *sev_message[] = {
+	"Secure Nested Paging (SEV-SNP)",
+	"Secure Encrypted Virtualization (SEV-ES)",
+	"Secure Encrypted Virtualization (SEV)",
+	NULL
+};
+
+const char *sev_active_message(void)
+{
+	if (sev_snp_active())
+		return sev_message[0];
+	else if (sev_es_active())
+		return sev_message[1];
+	else
+		return sev_message[2];
+}
+
 void __init mem_encrypt_init(void)
 {
 	if (!sme_me_mask)
@@ -453,7 +470,7 @@ void __init mem_encrypt_init(void)
 		static_branch_enable(&sev_enable_key);
 
 	pr_info("AMD %s active\n",
-		sev_active() ? "Secure Encrypted Virtualization (SEV)"
+		sev_active() ? sev_active_message()
 			     : "Secure Memory Encryption (SME)");
 }
 
