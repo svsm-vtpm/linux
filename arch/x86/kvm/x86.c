@@ -9571,6 +9571,18 @@ void kvm_vcpu_deliver_sipi_vector(struct kvm_vcpu *vcpu, u8 vector)
 {
 	struct kvm_segment cs;
 
+	/*
+	 * For SEV-ES, the register state can't be altered by
+	 * KVM. If the VMSA is encrypted just return:
+	 *
+	 *   First SIPI: Use the the values as initially set by the VMM.
+	 *
+	 *   Subsequent SIPI: Return from an AP Reset Hold VMGEXIT, where
+	 *     the guest will set the CS and RIP.
+	 */
+	if (vcpu->arch.vmsa_encrypted)
+		return;
+
 	kvm_get_segment(vcpu, &cs, VCPU_SREG_CS);
 	cs.selector = vector << 8;
 	cs.base = vector << 12;
