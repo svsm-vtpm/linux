@@ -238,10 +238,18 @@ struct x86_legacy_features {
 /**
  * struct x86_hyper_runtime - x86 hypervisor specific runtime callbacks
  *
- * @pin_vcpu:		pin current vcpu to specified physical cpu (run rarely)
+ * @pin_vcpu:			pin current vcpu to specified physical
+ * 				cpu (run rarely)
+ * @sev_migration_hcall:	this hypercall is used by the SEV guest
+ * 				to notify a change in the page encryption
+ * 				status to the hypervisor.
  */
 struct x86_hyper_runtime {
 	void (*pin_vcpu)(int cpu);
+#if defined(CONFIG_AMD_MEM_ENCRYPT)
+	long (*sev_migration_hcall)(unsigned long physaddr,
+				    unsigned long npages, bool enc);
+#endif
 };
 
 /**

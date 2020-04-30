@@ -729,6 +729,15 @@ static void __init kvm_init_platform(void)
 	x86_platform.apic_post_init = kvm_apic_init;
 }
 
+#if defined(CONFIG_AMD_MEM_ENCRYPT)
+long kvm_sev_migration_hcall(unsigned long physaddr, unsigned long npages,
+			     bool enc)
+{
+	return kvm_sev_hypercall3(KVM_HC_PAGE_ENC_STATUS, physaddr, npages,
+				  enc);
+}
+#endif
+
 const __initconst struct hypervisor_x86 x86_hyper_kvm = {
 	.name			= "KVM",
 	.detect			= kvm_detect,
@@ -736,6 +745,9 @@ const __initconst struct hypervisor_x86 x86_hyper_kvm = {
 	.init.guest_late_init	= kvm_guest_init,
 	.init.x2apic_available	= kvm_para_available,
 	.init.init_platform	= kvm_init_platform,
+#if defined(CONFIG_AMD_MEM_ENCRYPT)
+	.runtime.sev_migration_hcall = kvm_sev_migration_hcall,
+#endif
 };
 
 static __init int activate_jump_labels(void)
