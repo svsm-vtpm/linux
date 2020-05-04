@@ -3380,6 +3380,10 @@ static int __direct_map(struct kvm_vcpu *vcpu, gpa_t gpa, int write,
 		}
 	}
 
+	/* Adjust the RMP page level */
+	if (kvm_x86_ops->rmp_level_adjust)
+		kvm_x86_ops->rmp_level_adjust(vcpu, base_gfn, &pfn, &level);
+
 	ret = mmu_set_spte(vcpu, it.sptep, ACC_ALL,
 			   write, level, base_gfn, pfn, prefault,
 			   map_writable);

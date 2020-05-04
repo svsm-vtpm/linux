@@ -576,6 +576,9 @@ static inline int snp_rmpupdate_clear(u64 spa)
 	return snp_rmpupdate_set(spa, &e);
 }
 
+#define RMP_KVM_PT_LEVEL(x) ((x == RMP_PG_SIZE_4K) ? PT_PAGE_TABLE_LEVEL : PT_DIRECTORY_LEVEL)
+#define KVM_RMP_PT_LEVEL(x) ((x == PT_PAGE_TABLE_LEVEL) ? RMP_PG_SIZE_4K :  RMP_PG_SIZE_2M)
+
 static inline int snp_psmash(u64 spa)
 {
 	int ret;

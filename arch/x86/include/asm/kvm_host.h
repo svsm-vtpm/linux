@@ -1282,6 +1282,8 @@ struct kvm_x86_ops {
 			  unsigned long val);
 
 	bool (*allow_debug)(struct kvm *kvm);
+	void (*rmp_level_adjust)(struct kvm_vcpu *vcpu, gfn_t gfn,
+				 kvm_pfn_t *pfnp, int *level);
 };
 
 struct kvm_arch_async_pf {
