@@ -2355,7 +2355,7 @@ static int svm_create_vcpu(struct kvm_vcpu *vcpu)
 	struct page *msrpm_pages;
 	struct page *hsave_page;
 	struct page *nested_msrpm_pages;
-	struct page *vmsa_page = NULL, *ghcb_page = NULL;
+	struct page *vmsa_page = NULL;
 	int err;
 
 	BUILD_BUG_ON(offsetof(struct vcpu_svm, vcpu) != 0);
@@ -2387,15 +2387,11 @@ static int svm_create_vcpu(struct kvm_vcpu *vcpu)
 			if (set_memory_4k((unsigned long)page_address(vmsa_page), 1))
 				goto free_page5;
 		}
-
-		ghcb_page = alloc_page(GFP_KERNEL);
-		if (!ghcb_page)
-			goto free_page5;
 	}
 
 	err = avic_init_vcpu(svm);
 	if (err)
-		goto free_page6;
+		goto free_page5;
 
 	/* We initialize this flag to true to make sure that the is_running
 	 * bit would be set the first time the vcpu is loaded.
@@ -2415,12 +2411,9 @@ static int svm_create_vcpu(struct kvm_vcpu *vcpu)
 	clear_page(svm->vmcb);
 	svm->vmcb_pa = __sme_set(page_to_pfn(page) << PAGE_SHIFT);
 
-	if (vmsa_page && ghcb_page) {
+	if (vmsa_page) {
 		svm->vmsa = page_address(vmsa_page);
 		clear_page(svm->vmsa);
-
-		svm->ghcb = page_address(ghcb_page);
-		clear_page(svm->ghcb);
 	}
 
 	svm->asid_generation = 0;
@@ -2432,9 +2425,6 @@ static int svm_create_vcpu(struct kvm_vcpu *vcpu)
 
 	return 0;
 
-free_page6:
-	if (ghcb_page)
-		__free_page(ghcb_page);
 free_page5:
 	if (vmsa_page)
 		__free_page(vmsa_page);
@@ -2472,8 +2462,6 @@ static void svm_free_vcpu(struct kvm_vcpu *vcpu)
 	if (sev_es_guest(vcpu->kvm)) {
 		struct kvm_sev_info *sev = &to_kvm_svm(vcpu->kvm)->sev_info;
 		u64 page_to_flush;
-
-		__free_page(virt_to_page(svm->ghcb));
 
 		/*
 		 * The VMSA page was used by hardware to hold guest encrypted
@@ -5360,6 +5348,12 @@ static bool setup_vmgexit_scratch(struct vcpu_svm *svm, bool sync, u64 len)
 		scratch_va = (void *)svm->ghcb;
 		scratch_va += (scratch_gpa_beg - svm->vmcb->control.ghcb_gpa);
 	} else {
+		/* If SNP is enabled the scratch area must be within the GHCB page */
+		if (sev_snp_guest(svm->vcpu.kvm)) {
+			pr_err("vmgexit: scratch area is outside the GHCB.\n");
+			return false;
+		}
+
 		/*
 		 * The guest memory must be read into a kernel buffer, so
 		 * limit the size
@@ -5550,11 +5544,8 @@ static int handle_snp_mem_op(struct vcpu_svm *svm, uint8_t *data)
 static int handle_vmgexit_msr_protocol(struct vcpu_svm *svm)
 {
 	struct vmcb_control_area *control = &svm->vmcb->control;
-	struct ghcb *ghcb = svm->ghcb;
 	u64 ghcb_info;
 	int ret = 1;
-
-	svm->ghcb_active = true;
 
 	ghcb_info = control->ghcb_gpa & GHCB_MSR_INFO_MASK;
 
@@ -5572,8 +5563,7 @@ static int handle_vmgexit_msr_protocol(struct vcpu_svm *svm)
 					     GHCB_MSR_CPUID_FUNC_POS);
 
 		/* Setup the vCPU GHCB and use the CPUID intercept */
-		ghcb_set_rax(ghcb, cpuid_fn);
-		ghcb_set_rcx(ghcb, 0);
+		svm_rax_write(svm, cpuid_fn);
 
 		ret = cpuid_interception(svm);
 		if (!ret) {
@@ -5585,13 +5575,13 @@ static int handle_vmgexit_msr_protocol(struct vcpu_svm *svm)
 					      GHCB_MSR_CPUID_REG_MASK,
 					      GHCB_MSR_CPUID_REG_POS);
 		if (cpuid_reg == 0)
-			cpuid_value = ghcb->save.rax;
+			cpuid_value = svm_rax_read(svm);
 		else if (cpuid_reg == 1)
-			cpuid_value = ghcb->save.rbx;
+			cpuid_value = svm_rbx_read(svm);
 		else if (cpuid_reg == 2)
-			cpuid_value = ghcb->save.rcx;
+			cpuid_value = svm_rcx_read(svm);
 		else
-			cpuid_value = ghcb->save.rdx;
+			cpuid_value = svm_rdx_read(svm);
 
 		set_ghcb_msr_bits(svm, cpuid_value,
 				  GHCB_MSR_CPUID_VALUE_MASK,
@@ -5637,14 +5627,12 @@ static int handle_vmgexit_msr_protocol(struct vcpu_svm *svm)
 		ret = -EINVAL;
 	}
 
-	svm->ghcb_active = false;
-
 	return ret;
 }
 
 static int handle_vmgexit(struct vcpu_svm *svm)
 {
-	struct ghcb *ghcb = svm->ghcb;
+	struct ghcb *ghcb;
 	u64 ghcb_gpa;
 	int ret;
 
@@ -5658,13 +5646,16 @@ static int handle_vmgexit(struct vcpu_svm *svm)
 		return -EINVAL;
 	}
 
-	if (kvm_read_guest(svm->vcpu.kvm, ghcb_gpa, ghcb, PAGE_SIZE)) {
-		/* Unable to copy GHCB from guest */
-		WARN(1, "svm: vmgexit: unable to copy GHCB from guest\n");
+	/* Map the GHCB page, the page will be unmaped in pre_sev_es_run() */
+	if (kvm_vcpu_map(&svm->vcpu, gpa_to_gfn(ghcb_gpa), &svm->ghcb_host_map)) {
+		WARN(1, "svm: vmgexit: unable to map the GHCB from guest\n");
+		dump_vmcb(&svm->vcpu);
 		return -EINVAL;
 	}
 
 	svm->ghcb_active = true;
+	svm->ghcb = (struct ghcb*) svm->ghcb_host_map.hva;
+	ghcb = svm->ghcb;
 
 	svm->vmcb->control.exit_code = lower_32_bits(ghcb->save.sw_exit_code);
 	svm->vmcb->control.exit_code_hi = upper_32_bits(ghcb->save.sw_exit_code);
@@ -5888,9 +5879,9 @@ static void pre_sev_es_run(struct vcpu_svm *svm)
 		svm->ghcb_sa_free = false;
 	}
 
-	kvm_write_guest(svm->vcpu.kvm, ghcb_gpa, svm->ghcb, PAGE_SIZE);
-
+	kvm_vcpu_unmap(&svm->vcpu, &svm->ghcb_host_map, true);
 	svm->ghcb_active = false;
+	svm->ghcb = NULL;
 }
 
 static void pre_sev_run(struct vcpu_svm *svm, int cpu)

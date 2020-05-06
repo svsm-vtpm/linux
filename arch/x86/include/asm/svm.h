@@ -538,6 +538,7 @@ struct vcpu_svm {
 	struct vmcb_save_area *vmsa;
 	struct ghcb *ghcb;
 	bool ghcb_active;
+	struct kvm_host_map ghcb_host_map;
 
 	/* SEV-ES scratch area support */
 	void *ghcb_sa;
@@ -679,10 +680,15 @@ static inline struct vmcb_save_area *get_vmsa(struct vcpu_svm *svm)
 		 * area to construct the initial state.  Afterwards, use
 		 * the GHCB.
 		 */
-		if (svm->vcpu.arch.vmsa_encrypted)
-			vmsa = &svm->ghcb->save;
-		else
+		if (svm->vcpu.arch.vmsa_encrypted) {
+			/* If GHCB is not active then return the original save area */
+			if (svm->ghcb_active)
+				vmsa = &svm->ghcb->save;
+			else
+				vmsa = &svm->vmcb->save;
+		} else {
 			vmsa = svm->vmsa;
+		}
 	} else {
 		vmsa = &svm->vmcb->save;
 	}
