@@ -612,11 +612,15 @@ clear_all:
 clear_sev:
 		setup_clear_cpu_cap(X86_FEATURE_SEV);
 		setup_clear_cpu_cap(X86_FEATURE_SEV_ES);
+		setup_clear_cpu_cap(X86_FEATURE_SEV_SNP);
 	}
 
 	if (!rdmsrl_safe(MSR_AMD64_SEV, &msr)) {
 		if (msr & MSR_AMD64_SEV_ES_ENABLED)
 			set_cpu_cap(c, X86_FEATURE_SEV_ES_GUEST);
+
+		if (msr & MSR_AMD64_SEV_SNP_ENABLED)
+			set_cpu_cap(c, X86_FEATURE_SEV_SNP_GUEST);
 	}
 }
 
