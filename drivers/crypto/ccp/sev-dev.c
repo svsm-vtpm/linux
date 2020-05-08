@@ -20,6 +20,7 @@
 #include <linux/hw_random.h>
 #include <linux/ccp.h>
 #include <linux/firmware.h>
+#include <linux/io.h>
 
 #include <asm/smp.h>
 
@@ -589,6 +590,88 @@ fw_err:
 	return ret;
 }
 
+static int __sev_snp_init_locked(int *error)
+{
+	struct psp_device *psp = psp_master;
+	struct sev_device *sev;
+	int rc = 0, fw_err;
+
+	if (!psp || !psp->sev_data)
+		return -ENODEV;
+
+	sev = psp->sev_data;
+
+	/* If leagacy SEV firmware is initialized then try shutting it down */
+	if (!sev->snp_inited && sev->state == SEV_STATE_INIT) {
+		rc = __sev_platform_shutdown_locked(&fw_err);
+		if (rc) {
+			dev_err(sev->dev, "Shutting down legacy firmware failed (%d)\n", fw_err);
+			return 1;
+		}
+	}
+
+	if (sev->state == SEV_STATE_INIT)
+		return 0;
+
+	/* Prepare for first SEV guest launch after INIT */
+	wbinvd_on_all_cpus();
+	rc = __sev_do_cmd_locked(SEV_CMD_SNP_INIT, NULL, error);
+	if (rc)
+		return rc;
+
+	sev->state = SEV_STATE_INIT;
+	sev->snp_inited = true;
+	dev_dbg(sev->dev, "SEV-SNP firmware initialized\n");
+
+	return rc;
+}
+
+int sev_snp_init(int *error)
+{
+	int rc;
+
+	mutex_lock(&sev_cmd_mutex);
+	rc = __sev_snp_init_locked(error);
+	mutex_unlock(&sev_cmd_mutex);
+
+	return rc;
+}
+EXPORT_SYMBOL_GPL(sev_snp_init);
+
+static int __sev_snp_shutdown_locked(int *error)
+{
+	struct sev_device *sev = psp_master->sev_data;
+	int ret;
+
+	ret = __sev_do_cmd_locked(SEV_CMD_SNP_SHUTDOWN, NULL, error);
+	if (ret)
+		return ret;
+
+	wbinvd_on_all_cpus();
+
+	ret = __sev_do_cmd_locked(SEV_CMD_SNP_DF_FLUSH, NULL, error);
+	if (ret)
+		dev_err(sev->dev, "SEV-SNP firmware DF_FLUSH failed\n");
+
+	sev->state = SEV_STATE_UNINIT;
+	sev->snp_inited = false;
+	dev_dbg(sev->dev, "SEV-SNP firmware shutdown\n");
+
+	return ret;
+}
+
+static int sev_snp_shutdown(int *error)
+{
+	int rc;
+
+	mutex_lock(&sev_cmd_mutex);
+	rc = __sev_snp_shutdown_locked(NULL);
+	mutex_unlock(&sev_cmd_mutex);
+
+	return rc;
+}
+
+
 static int sev_ioctl_do_pek_import(struct sev_issue_cmd *argp)
 {
 	struct sev_device *sev = psp_master->sev_data;
@@ -1058,6 +1141,20 @@ int sev_issue_cmd_external_user(struct file *filep, unsigned int cmd,
 }
 EXPORT_SYMBOL_GPL(sev_issue_cmd_external_user);
 
+static bool is_snp_active(void)
+{
+	u64 val;
+
+	if (boot_cpu_has(X86_FEATURE_SEV_SNP))
+		return false;
+
+	rdmsrl_safe(MSR_K8_SYSCFG, &val);
+	if (val & MSR_K8_SYSCFG_SNP_EN)
+		return true;
+
+	return false;
+}
+
 void sev_pci_init(void)
 {
 	struct sev_device *sev = psp_master->sev_data;
@@ -1066,6 +1163,9 @@ void sev_pci_init(void)
 		return;
 
 	psp_timeout = psp_probe_timeout;
+
+	/* check if SNP is active */
+	sev->snp_active = is_snp_active();
 
 	if (sev_get_api_version())
 		goto err;
@@ -1107,10 +1207,15 @@ err:
 
 void sev_pci_exit(void)
 {
+	struct sev_device *sev = psp_master->sev_data;
+
 	if (!psp_master->sev_data)
 		return;
 
-	sev_platform_shutdown(NULL);
+	if (sev->snp_inited)
+		sev_snp_shutdown(NULL);
+	else
+		sev_platform_shutdown(NULL);
 
 	if (sev_es_tmr) {
 		wbinvd_on_all_cpus();
