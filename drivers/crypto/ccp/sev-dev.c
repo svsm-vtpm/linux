@@ -240,8 +240,24 @@ static int __sev_platform_init_locked(int *error)
 	}
 
 	rc = __sev_do_cmd_locked(SEV_CMD_INIT, &sev->init_cmd_buf, error);
-	if (rc)
-		return rc;
+	if (rc) {
+		if (*error == SEV_RET_SECURE_DATA_INVALID) {
+			/*
+			 * INIT command returned an integrity check failure
+			 * status code, meaning that firmware load and
+			 * validation of SEV related persistent data has
+			 * failed and persistent state has been erased.
+			 * Retrying INIT command here should succeed.
+			 */
+			dev_dbg(sev->dev, "SEV: retrying INIT command");
+			rc = __sev_do_cmd_locked(SEV_CMD_INIT, &sev->init_cmd_buf, error);
+
+			if (rc)
+				return rc;
+		} else {
+			return rc;
+		}
+	}
 
 	sev->state = SEV_STATE_INIT;
 
@@ -1036,7 +1052,6 @@ EXPORT_SYMBOL_GPL(sev_issue_cmd_external_user);
 void sev_pci_init(void)
 {
 	struct sev_device *sev = psp_master->sev_data;
-	int error, rc;
 
 	if (!sev)
 		return;
@@ -1070,25 +1085,6 @@ void sev_pci_init(void)
 		sev_es_tmr = kzalloc(SEV_ES_TMR_LEN, GFP_KERNEL);
 		if (!sev_es_tmr)
 			goto err;
-	}
-
-	/* Initialize the platform */
-	rc = sev_platform_init(&error);
-	if (rc && (error == SEV_RET_SECURE_DATA_INVALID)) {
-		/*
-		 * INIT command returned an integrity check failure
-		 * status code, meaning that firmware load and
-		 * validation of SEV related persistent data has
-		 * failed and persistent state has been erased.
-		 * Retrying INIT command here should succeed.
-		 */
-		dev_dbg(sev->dev, "SEV: retrying INIT command");
-		rc = sev_platform_init(&error);
-	}
-
-	if (rc) {
-		dev_err(sev->dev, "SEV: failed to INIT error %#x\n", error);
-		return;
 	}
 
 	dev_info(sev->dev, "SEV API:%d.%d build:%d\n", sev->api_major,
