@@ -517,6 +517,65 @@ struct vcpu_svm {
 
 #define __sme_page_pa(x) __sme_set(page_to_pfn(x) << PAGE_SHIFT)
 
+struct rmp_entry {
+	u64 low;
+	u64 high;
+} __packed;
+
+static inline bool rmp_entry_assigned(struct rmp_entry *v)
+{
+	return !!(v->low & 1);
+}
+
+static inline bool rmp_entry_immutable(struct rmp_entry *v)
+{
+	return !!((v->low >> 2) & 1);
+}
+
+static inline int rmp_entry_page_size(struct rmp_entry *v)
+{
+	return (v->low >> 1) & 1;
+}
+
+struct rmpupdate_entry {
+	u64 gpa;
+	u8 assigned;
+	u8 pagesize;
+	u8 immutable;
+	u8 rsvd;
+	u32 asid;
+} __packed;
+
+static inline int snp_rmpupdate_set(u64 spa, struct rmpupdate_entry *e)
+{
+	bool flush = true;
+	int ret;
+
+	asm volatile(".byte 0xF2, 0x0F, 0x01, 0xFE\n\t" // rmpupdate
+		     : "=a"(ret)
+		     : "a"(spa), "c"((unsigned long)e), "d"(flush) : "memory");
+
+	return ret;
+}
+
+static inline int snp_rmpupdate_clear(u64 spa)
+{
+	struct rmpupdate_entry e = {};
+
+	return snp_rmpupdate_set(spa, &e);
+}
+
+static inline int snp_psmash(u64 spa)
+{
+	int ret;
+
+	asm volatile(".byte 0xF2, 0x0F, 0x01, 0xFF\n\t" // psmash
+		     : "=a"(ret)
+		     : "a"(spa) : "memory");
+
+	return ret;
+}
+
 struct enc_region {
 	struct list_head list;
 	unsigned long npages;
