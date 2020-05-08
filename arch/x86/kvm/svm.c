@@ -51,7 +51,6 @@
 #include <asm/spec-ctrl.h>
 #include <asm/traps.h>
 #include <asm/fpu/internal.h>
-
 #include <asm/virtext.h>
 #include "trace.h"
 

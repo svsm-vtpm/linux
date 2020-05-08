@@ -55,6 +55,7 @@ struct sev_device {
 
 	bool snp_active;
 	bool snp_inited;
+	bool legacy_inited;
 };
 
 int sev_dev_init(struct psp_device *psp);
