@@ -1269,6 +1269,8 @@ struct kvm_x86_ops {
 	bool (*allow_debug)(struct kvm *kvm);
 
 	void (*vcpu_deliver_sipi_vector)(struct kvm_vcpu *vcpu, u8 vector);
+	void (*rmp_level_adjust)(struct kvm_vcpu *vcpu, gfn_t gfn,
+				 kvm_pfn_t *pfnp, int *level);
 };
 
 struct kvm_x86_init_ops {
