@@ -3506,7 +3506,9 @@ static void svm_vcpu_run(struct kvm_vcpu *vcpu)
 	svm_cr2_write(svm, vcpu->arch.cr2);
 
 	clgi();
-	kvm_load_guest_xsave_state(vcpu);
+
+	if (!sev_es_guest(svm->vcpu.kvm))
+		kvm_load_guest_xsave_state(vcpu);
 
 	if (lapic_in_kernel(vcpu) &&
 		vcpu->arch.apic->lapic_timer.timer_advance_ns)
@@ -3561,7 +3563,9 @@ static void svm_vcpu_run(struct kvm_vcpu *vcpu)
 	if (unlikely(svm->vmcb->control.exit_code == SVM_EXIT_NMI))
 		kvm_before_interrupt(&svm->vcpu);
 
-	kvm_load_host_xsave_state(vcpu);
+	if (!sev_es_guest(svm->vcpu.kvm))
+		kvm_load_host_xsave_state(vcpu);
+
 	stgi();
 
 	/* Any pending NMI will happen here */
