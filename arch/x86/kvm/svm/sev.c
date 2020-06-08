@@ -23,6 +23,9 @@
 #include "x86.h"
 #include "svm.h"
 
+#define RMP_KVM_PT_LEVEL(x) ((x == RMP_PG_SIZE_4K) ? PT_PAGE_TABLE_LEVEL : PT_DIRECTORY_LEVEL)
+#define KVM_RMP_PT_LEVEL(x) ((x == PT_PAGE_TABLE_LEVEL) ? RMP_PG_SIZE_4K :  RMP_PG_SIZE_2M)
+
 static u8 sev_enc_bit;
 static int sev_flush_asids(void);
 static DECLARE_RWSEM(sev_deactivate_lock);
@@ -36,6 +39,7 @@ static void *rmp_table_vaddr;
 static void snp_print_rmpentry(u64 spa);
 static void snp_free_context_page(struct page *page);
 static int snp_decommission_context(struct kvm *kvm);
+static void snp_read_rmpentry(u64 spa, struct rmp_entry *e);
 
 struct enc_region {
 	struct list_head list;
@@ -1005,6 +1009,16 @@ e_free:
 e_unpin_memory:
 	sev_unpin_memory(kvm, pages, n);
 	return ret;
+}
+
+static void snp_read_rmpentry(u64 spa, struct rmp_entry *ret)
+{
+	unsigned long start = (unsigned long)rmp_table_vaddr + (4 * PAGE_SIZE);
+	uint8_t *ptr;
+
+	start += sizeof(struct rmp_entry) * (spa >> PAGE_SHIFT);
+	ptr = (uint8_t *)start;
+	memcpy(ret, ptr, sizeof(*ret));
 }
 
 static void snp_print_rmpentry(u64 spa)
@@ -2263,5 +2277,63 @@ void sev_es_vcpu_put(struct vcpu_svm *svm)
 			continue;
 
 		wrmsrl(host_save_user_msrs[i].index, svm->host_user_msrs[i]);
+	}
+}
+
+void svm_rmp_level_adjust(struct kvm_vcpu *vcpu, gfn_t gfn,
+			  kvm_pfn_t *pfnp, int *in_level)
+{
+	int level = *in_level, rc, rlevel;
+	unsigned long spa = *pfnp << PAGE_SHIFT;
+	struct rmp_entry e;
+	u64 mask;
+
+	if (!sev_snp_guest(vcpu->kvm))
+		return;
+
+	snp_read_rmpentry(spa, &e);
+	rlevel = KVM_RMP_PT_LEVEL(rmp_entry_page_size(&e));
+
+	/* If gfn is not assigned then do nothing */
+	if (!rmp_entry_assigned(&e))
+		return;
+
+
+	/* If RMP and request page level matches then do nothing */
+	if (rlevel == level)
+		return;
+
+	/*
+	 * If the requested page level is 2MB but in RMP its a 4K size,
+	 * then try performing an UNSMASH operation to combine the range
+	 * as a 2MB page.
+	 */
+	if (level == PT_DIRECTORY_LEVEL) {
+		int fw_err;
+
+		/* Try unsmash operation to combine the entries as 2MB */
+		rc = sev_snp_unsmash(spa, &fw_err);
+		if (rc) {
+			pr_err("SNP: failed to unsmash spa 0x%lx gfn 0x%llx (0x%x)\n",
+					spa, gfn, fw_err);
+			pr_err("SNP: failed to fixup RMP table gfn 0x%llx level %d->%d\n",
+				gfn, rlevel, level);
+			return;
+		}
+
+		return;
+	}
+
+	/*
+	 * If the requested page level is 4K but in the RMP its marked as 2MB
+	 * then try psmash.
+	 */
+	mask = KVM_PAGES_PER_HPAGE(PT_DIRECTORY_LEVEL) - 1;
+	spa = spa & ~mask;
+	rc = snp_psmash(spa);
+	if (rc) {
+		pr_err("SNP: failed to PSMASH spa 0x%lx.\n", spa);
+		pr_alert("SNP: failed to fixup RMP table gfn 0x%llx level %d->%d\n",
+				gfn, rlevel, level);
 	}
 }

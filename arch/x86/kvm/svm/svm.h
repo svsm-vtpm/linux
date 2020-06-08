@@ -585,6 +585,9 @@ int svm_register_enc_region(struct kvm *kvm,
 			    struct kvm_enc_region *range);
 int svm_unregister_enc_region(struct kvm *kvm,
 			      struct kvm_enc_region *range);
+void svm_rmp_level_adjust(struct kvm_vcpu *vcpu, gfn_t gfn,
+				 kvm_pfn_t *pfnp, int *in_level);
+
 void pre_sev_run(struct vcpu_svm *svm, int cpu);
 void __init sev_hardware_setup(void);
 void sev_hardware_teardown(void);

@@ -3078,6 +3078,10 @@ static int set_spte(struct kvm_vcpu *vcpu, u64 *sptep,
 	if (speculative)
 		spte = mark_spte_for_access_track(spte);
 
+	/* Adjust the RMP page level */
+	if (tdp_enabled && kvm_x86_ops.rmp_level_adjust)
+		kvm_x86_ops.rmp_level_adjust(vcpu, gfn, &pfn, &level);
+
 set_pte:
 	if (mmu_spte_update(sptep, spte))
 		ret |= SET_SPTE_NEED_REMOTE_TLB_FLUSH;
