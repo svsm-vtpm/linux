@@ -29,6 +29,7 @@ unsigned int max_sev_asid;
 static unsigned int min_sev_asid;
 static unsigned long *sev_asid_bitmap;
 static unsigned long *sev_reclaim_asid_bitmap;
+static void *rmp_table_vaddr;
 
 struct enc_region {
 	struct list_head list;
@@ -1176,13 +1177,40 @@ void sev_vm_destroy(struct kvm *kvm)
 	sev_asid_free(sev->asid);
 }
 
+static __init int init_rmp_table(void)
+{
+	u64 rmp_base, rmp_end;
+	unsigned long sz;
+
+	rdmsrl_safe(MSR_AMD64_RMP_BASE, &rmp_base);
+	rdmsrl_safe(MSR_AMD64_RMP_END, &rmp_end);
+
+	if (!rmp_base || !rmp_end)
+		return 1;
+
+	sz = rmp_end - rmp_base;
+
+	rmp_table_vaddr = memremap(rmp_base, sz, MEMREMAP_WB);
+	if (!rmp_table_vaddr) {
+		pr_err("SNP: failed to remap 0x%llx-0x%llx\n", rmp_base, rmp_end);
+		return 1;
+	}
+
+	return 0;
+}
+
+static __exit void rmp_unsetup(void)
+{
+	if (rmp_table_vaddr)
+		memunmap(rmp_table_vaddr);
+}
+
 void __init sev_hardware_setup(void)
 {
-	struct sev_user_data_status *status = NULL;
 	unsigned int eax, ebx, ecx, edx;
 	bool sev_es_supported = false;
 	bool sev_supported = false;
-	int rc;
+	bool sev_snp_supported = false;
 
 	/* Does the CPU support SEV? */
 	if (!boot_cpu_has(X86_FEATURE_SEV))
@@ -1196,6 +1224,12 @@ void __init sev_hardware_setup(void)
 
 	/* Maximum number of encrypted guests supported simultaneously */
 	max_sev_asid = ecx;
+
+	/* SNP requires the SEV and SEV-ES to be enabled */
+	if (sev_snp) {
+		sev = 1;
+		sev_es = 1;
+	}
 
 	if (!svm_sev_enabled())
 		goto out;
@@ -1212,21 +1246,6 @@ void __init sev_hardware_setup(void)
 	if (!sev_reclaim_asid_bitmap)
 		goto out;
 
-	status = kmalloc(sizeof(*status), GFP_KERNEL);
-	if (!status)
-		goto out;
-
-	/*
-	 * Check SEV platform status.
-	 *
-	 * PLATFORM_STATUS can be called in any state, if we failed to query
-	 * the PLATFORM status then either PSP firmware does not support SEV
-	 * feature or SEV firmware is dead.
-	 */
-	rc = sev_platform_status(status, NULL);
-	if (rc)
-		goto out;
-
 	pr_info("SEV supported: %u ASIDs\n", max_sev_asid - min_sev_asid + 1);
 	sev_supported = true;
 
@@ -1238,10 +1257,6 @@ void __init sev_hardware_setup(void)
 	if (!boot_cpu_has(X86_FEATURE_SEV_ES))
 		goto out;
 
-	/* Is SEV-ES supported by the SEV firmware? */
-	if (!(status->flags & SEV_STATUS_FLAGS_CONFIG_ES))
-		goto out;
-
 	/* Has the system been allocated ASIDs for SEV-ES? */
 	if (min_sev_asid == 1)
 		goto out;
@@ -1249,11 +1264,24 @@ void __init sev_hardware_setup(void)
 	pr_info("SEV-ES supported: %u ASIDs\n", min_sev_asid - 1);
 	sev_es_supported = true;
 
+	/* SEV-SNP support requested ? */
+	if (!sev_snp)
+		goto out;
+
+	/* Does the CPU support SEV-SNP? */
+	if (!boot_cpu_has(X86_FEATURE_SEV_SNP))
+		goto out;
+
+	/* map the RMP table */
+	if (init_rmp_table())
+		goto out;
+
+	sev_snp_supported = true;
+	pr_info("SEV-SNP supported: %u ASIDs\n", min_sev_asid - 1);
 out:
 	sev = sev_supported;
 	sev_es = sev_es_supported;
-
-	kfree(status);
+	sev_snp = sev_snp_supported;
 }
 
 void sev_hardware_teardown(void)
@@ -1261,6 +1289,7 @@ void sev_hardware_teardown(void)
 	if (!svm_sev_enabled())
 		return;
 
+	rmp_unsetup();
 	bitmap_free(sev_asid_bitmap);
 	bitmap_free(sev_reclaim_asid_bitmap);
 
