@@ -592,6 +592,7 @@ int svm_unregister_enc_region(struct kvm *kvm,
 			      struct kvm_enc_region *range);
 void svm_rmp_level_adjust(struct kvm_vcpu *vcpu, gfn_t gfn,
 				 kvm_pfn_t *pfnp, int *in_level);
+int snp_page_reclaim(unsigned long spa);
 
 void pre_sev_run(struct vcpu_svm *svm, int cpu);
 void __init sev_hardware_setup(void);
@@ -603,6 +604,7 @@ void sev_es_init_vmcb(struct vcpu_svm *svm);
 void sev_es_create_vcpu(struct vcpu_svm *svm);
 void sev_es_vcpu_load(struct vcpu_svm *svm, int cpu);
 void sev_es_vcpu_put(struct vcpu_svm *svm);
+void dump_vmcb(struct kvm_vcpu *vcpu);
 
 /* vmenter.S */
 

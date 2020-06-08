@@ -51,6 +51,10 @@ struct enc_region {
 	unsigned long size;
 };
 
+/* enable/disable VMCB dump debug support */
+static int dump_all_vmcbs = false;
+module_param(dump_all_vmcbs, int, 0644);
+
 static int sev_flush_asids(void)
 {
 	int ret, error = 0;
@@ -1038,7 +1042,7 @@ static void snp_print_rmpentry(u64 spa)
 	pr_cont("\n");
 }
 
-static int snp_page_reclaim(unsigned long spa)
+int snp_page_reclaim(unsigned long spa)
 {
 	struct sev_data_snp_page_reclaim *data;
 	int rc, error;
@@ -1680,6 +1684,17 @@ void sev_vm_destroy(struct kvm *kvm)
 
 	if (!sev_guest(kvm))
 		return;
+
+	if (dump_all_vmcbs) {
+		unsigned int i;
+
+		for (i = 0; i < kvm->created_vcpus; i++) {
+			struct kvm_vcpu *vcpu = kvm->vcpus[i];
+
+			printk("*** DEBUG: %s:%u:%s - vcpu%u before destroy\n", __FILE__, __LINE__, __func__, vcpu->vcpu_id);
+			dump_vmcb(vcpu);
+		}
+	}
 
 	mutex_lock(&kvm->lock);
 
