@@ -20,6 +20,7 @@
 #include <linux/hw_random.h>
 #include <linux/ccp.h>
 #include <linux/firmware.h>
+#include <linux/io.h>
 
 #include <asm/smp.h>
 
@@ -570,6 +571,147 @@ fw_err:
 	return ret;
 }
 
+static bool is_snp_active(void)
+{
+	u64 val;
+
+	if (!boot_cpu_has(X86_FEATURE_SEV_SNP))
+		return false;
+
+	rdmsrl_safe(MSR_K8_SYSCFG, &val);
+	if (val & MSR_K8_SYSCFG_SNP_EN)
+		return true;
+
+	return false;
+}
+
+static void snp_enable(void *arg)
+{
+	u64 val;
+
+	rdmsrl_safe(MSR_K8_SYSCFG, &val);
+
+	val |= MSR_K8_SYSCFG_MEM_ENCRYPT;
+	val |= MSR_K8_SYSCFG_SNP_EN;
+	val |= MSR_K8_SYSCFG_SNP_VMPL_EN;
+
+	wrmsrl(MSR_K8_SYSCFG, val);
+}
+
+static int init_rmp_table(void)
+{
+	struct sev_device *sev = psp_master->sev_data;
+	u64 rmp_base, rmp_end;
+	void *rmp_table;
+	unsigned long sz;
+
+	rdmsrl_safe(MSR_AMD64_RMP_BASE, &rmp_base);
+	rdmsrl_safe(MSR_AMD64_RMP_END, &rmp_end);
+
+	if (!rmp_base || !rmp_end) {
+		dev_err(sev->dev, "RMP table memory is not reserved.\n");
+		return 1;
+	}
+
+	sz = rmp_end - rmp_base;
+
+	dev_dbg(sev->dev, "RMP physical range 0x%llx - 0x%llx\n", rmp_base, rmp_end);
+
+	rmp_table = memremap(rmp_base, sz, MEMREMAP_WB);
+	if (!rmp_table) {
+		dev_err(sev->dev, "SNP: failed to remap 0x%llx-0x%llx\n", rmp_base, rmp_end);
+		return 1;
+	}
+
+	memset(rmp_table, 0, sz);
+
+	memunmap(rmp_table);
+	return 0;
+}
+
+static int __sev_snp_init_locked(int *error)
+{
+	struct psp_device *psp = psp_master;
+	struct sev_device *sev;
+	int rc = 0;
+
+	if (!psp || !psp->sev_data)
+		return -ENODEV;
+
+	sev = psp->sev_data;
+
+	if (sev->snp_inited && sev->state >= SEV_STATE_INIT)
+		return 0;
+
+	/* If SNP is not active then initialize the RMP table to zero and enable the SNP */
+	if (!is_snp_active()) {
+		if (init_rmp_table())
+			return 1;
+
+		/* enable SNP support on all CPUs */
+		on_each_cpu(snp_enable, NULL, 1);
+
+		dev_notice(sev->dev, "snp enabled\n");
+	}
+
+	/* Prepare for first SEV guest launch after INIT */
+	wbinvd_on_all_cpus();
+	rc = __sev_do_cmd_locked(SEV_CMD_SNP_INIT, NULL, error);
+	if (rc)
+		return rc;
+
+	sev->snp_inited = true;
+	sev->state = SEV_STATE_INIT;
+	dev_dbg(sev->dev, "SEV-SNP firmware initialized\n");
+
+	return rc;
+}
+
+int sev_snp_init(int *error)
+{
+	int rc;
+
+	mutex_lock(&sev_cmd_mutex);
+	rc = __sev_snp_init_locked(error);
+	mutex_unlock(&sev_cmd_mutex);
+
+	return rc;
+}
+EXPORT_SYMBOL_GPL(sev_snp_init);
+
+static int __sev_snp_shutdown_locked(int *error)
+{
+	struct sev_device *sev = psp_master->sev_data;
+	int ret;
+
+	ret = __sev_do_cmd_locked(SEV_CMD_SNP_SHUTDOWN, NULL, error);
+	if (ret)
+		return ret;
+
+	wbinvd_on_all_cpus();
+
+	ret = __sev_do_cmd_locked(SEV_CMD_SNP_DF_FLUSH, NULL, error);
+	if (ret)
+		dev_err(sev->dev, "SEV-SNP firmware DF_FLUSH failed\n");
+
+	sev->snp_inited = false;
+	sev->state = SEV_STATE_UNINIT;
+	dev_dbg(sev->dev, "SEV-SNP firmware shutdown\n");
+
+	return ret;
+}
+
+static int sev_snp_shutdown(int *error)
+{
+	int rc;
+
+	mutex_lock(&sev_cmd_mutex);
+	rc = __sev_snp_shutdown_locked(NULL);
+	mutex_unlock(&sev_cmd_mutex);
+
+	return rc;
+}
+
 static int sev_ioctl_do_pek_import(struct sev_issue_cmd *argp, bool writable)
 {
 	struct sev_device *sev = psp_master->sev_data;
@@ -1040,6 +1182,45 @@ int sev_issue_cmd_external_user(struct file *filep, unsigned int cmd,
 }
 EXPORT_SYMBOL_GPL(sev_issue_cmd_external_user);
 
+static int sev_snp_firmware_state(void)
+{
+	struct sev_data_snp_platform_status_buf *buf = NULL;
+	struct sev_user_snp_status *status = NULL;
+	int state = SEV_STATE_UNINIT;
+	int rc, error;
+
+	status = kzalloc(sizeof(*status), GFP_KERNEL_ACCOUNT);
+	if (!status)
+		return -ENOMEM;
+
+	buf = kzalloc(sizeof(*buf), GFP_KERNEL_ACCOUNT);
+	if (!buf) {
+		kfree(status);
+		return -ENOMEM;
+	}
+
+	buf->status_paddr = __psp_pa(status);
+	rc = sev_do_cmd(SEV_CMD_SNP_PLATFORM_STATUS, buf, &error);
+
+	/*
+	 * The status buffer is allocated as a hypervisor page. As per the SEV spec,
+	 * if the firmware is in INIT state then status buffer must be either a
+	 * the firmware page or the default page. Since our status buffer is in
+	 * the hypervisor page so if firmware is in INIT state then we should
+	 * fail with INVALID_PAGE_STATE.
+	 */
+	if (rc && error == SEV_RET_INVALID_PAGE_STATE) {
+		state = SEV_STATE_INIT;
+		goto e_free;
+	}
+
+e_free:
+	kfree(buf);
+	kfree(status);
+
+	return state;
+}
+
 void sev_pci_init(void)
 {
 	struct sev_device *sev = psp_master->sev_data;
@@ -1050,6 +1231,12 @@ void sev_pci_init(void)
 		return;
 
 	psp_timeout = psp_probe_timeout;
+
+	/* check if SNP firmware is in INIT state, If so shutdown */
+	if (boot_cpu_has(X86_FEATURE_SEV_SNP)) {
+		if (sev_snp_firmware_state() == SEV_STATE_INIT)
+			sev_snp_shutdown(NULL);
+	}
 
 	if (sev_get_api_version())
 		goto err;
@@ -1069,6 +1256,11 @@ void sev_pci_init(void)
 		sev->state = SEV_STATE_UNINIT;
 	}
 
+	/*
+	 * TODO: if SNP is active then query the firmware state, if firmware
+	 * is in INIT then shutdown.
+	 */
+
 	if (sev_version_greater_or_equal(0, 15) &&
 	    sev_update_firmware(sev->dev) == 0)
 		sev_get_api_version();
@@ -1081,6 +1273,21 @@ void sev_pci_init(void)
 		sev_es_tmr = NULL;
 		dev_warn(sev->dev,
 			 "SEV: TMR allocation failed, SEV-ES support unavailable\n");
+	}
+
+	/*
+	 * If boot CPU supports the SNP, then let first attempt to initialize
+	 * the SNP firmware.
+	 */
+	if (boot_cpu_has(X86_FEATURE_SEV_SNP)) {
+		rc = sev_snp_init(&error);
+		if (rc) {
+			/*
+			 * If we failed to INIT SNP then don't abort the probe.
+			 * Continue to initialize the legacy SEV firmware.
+			 */
+			dev_err(sev->dev, "SEV-SNP: failed to INIT error %#x\n", error);
+		}
 	}
 
 	/* Initialize the platform */
@@ -1102,8 +1309,8 @@ void sev_pci_init(void)
 		return;
 	}
 
-	dev_info(sev->dev, "SEV API:%d.%d build:%d\n", sev->api_major,
-		 sev->api_minor, sev->build);
+	dev_info(sev->dev, "SEV%s API:%d.%d build:%d\n", sev->snp_inited ?
+			"-SNP" : "", sev->api_major, sev->api_minor, sev->build);
 
 	return;
 
@@ -1115,6 +1322,9 @@ void sev_pci_exit(void)
 {
 	if (!psp_master->sev_data)
 		return;
+
+	if (boot_cpu_has(X86_FEATURE_SEV_SNP))
+		sev_snp_shutdown(NULL);
 
 	sev_platform_shutdown(NULL);
 
