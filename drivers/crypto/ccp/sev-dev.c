@@ -141,6 +141,7 @@ static int sev_cmd_buffer_len(int cmd)
 	case SEV_CMD_SNP_GUEST_STATUS:		return sizeof(struct sev_data_snp_guest_status);
 	case SEV_CMD_SNP_LAUNCH_FINISH:		return sizeof(struct sev_data_snp_launch_finish);
 	case SEV_CMD_SNP_PAGE_UNSMASH:		return sizeof(struct sev_data_snp_page_unsmash);
+	case SEV_CMD_SNP_PLATFORM_STATUS:	return sizeof(struct sev_data_snp_platform_status_buf);
 	default:				return 0;
 	}
 
@@ -1319,21 +1320,21 @@ EXPORT_SYMBOL_GPL(sev_issue_cmd_external_user);
 static int sev_snp_firmware_state(void)
 {
 	struct sev_data_snp_platform_status_buf *buf = NULL;
-	struct sev_user_snp_status *status = NULL;
+	struct page *status_page = NULL;
 	int state = SEV_STATE_UNINIT;
 	int rc, error;
 
-	status = kzalloc(sizeof(*status), GFP_KERNEL_ACCOUNT);
-	if (!status)
+	status_page = alloc_page(GFP_KERNEL_ACCOUNT | __GFP_ZERO);
+	if (!status_page)
 		return -ENOMEM;
 
 	buf = kzalloc(sizeof(*buf), GFP_KERNEL_ACCOUNT);
 	if (!buf) {
-		kfree(status);
+		__free_page(status_page);
 		return -ENOMEM;
 	}
 
-	buf->status_paddr = __psp_pa(status);
+	buf->status_paddr = __sme_page_pa(status_page);
 	rc = sev_do_cmd(SEV_CMD_SNP_PLATFORM_STATUS, buf, &error);
 
 	/*
@@ -1350,7 +1351,7 @@ static int sev_snp_firmware_state(void)
 
 e_free:
 	kfree(buf);
-	kfree(status);
+	__free_page(status_page);
 
 	return state;
 }
