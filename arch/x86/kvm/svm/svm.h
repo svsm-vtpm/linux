@@ -20,6 +20,7 @@
 #include <linux/bits.h>
 
 #include <asm/svm.h>
+#include <asm/rmptable.h>
 
 #define __sme_page_pa(x) __sme_set(page_to_pfn(x) << PAGE_SHIFT)
 
@@ -79,6 +80,7 @@ struct kvm_sev_info {
 	unsigned long pages_locked; /* Number of pages locked */
 	struct list_head regions_list;  /* List of registered regions */
 	u64 ap_jump_table;	/* SEV-ES AP Jump Table address */
+	struct page *snp_context;      /* SNP guest context page */
 };
 
 struct kvm_svm {
