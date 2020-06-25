@@ -1178,9 +1178,21 @@ void sev_vm_destroy(struct kvm *kvm)
 	sev_asid_free(sev->asid);
 }
 
+static inline bool snp_enabled(void)
+{
+	u64 val;
+
+	rdmsrl_safe(MSR_K8_SYSCFG, &val);
+	if (val & MSR_K8_SYSCFG_SNP_EN)
+		return true;
+
+	return false;
+}
+
 void __init sev_hardware_setup(void)
 {
 	unsigned int eax, ebx, ecx, edx;
+	bool sev_snp_supported = false;
 	bool sev_es_supported = false;
 	bool sev_supported = false;
 
@@ -1196,6 +1208,10 @@ void __init sev_hardware_setup(void)
 
 	/* Maximum number of encrypted guests supported simultaneously */
 	max_sev_asid = ecx;
+
+	/* SNP requires the SEV-ES to be enabled */
+	if (sev_snp)
+		sev_es = 1;
 
 	if (!svm_sev_enabled())
 		goto out;
@@ -1230,9 +1246,24 @@ void __init sev_hardware_setup(void)
 	pr_info("SEV-ES supported: %u ASIDs\n", min_sev_asid - 1);
 	sev_es_supported = true;
 
+	/* SEV-SNP support requested? */
+	if (!sev_snp)
+		goto out;
+
+	/* Does the CPU support SEV-SNP? */
+	if (!boot_cpu_has(X86_FEATURE_SEV_SNP))
+		goto out;
+
+	/* Is SNP enabled? */
+	if (!snp_enabled())
+		goto out;
+
+	pr_info("SEV-SNP supported: %u ASIDs\n", min_sev_asid - 1);
+	sev_snp_supported = true;
 out:
 	sev = sev_supported;
 	sev_es = sev_es_supported;
+	sev_snp = sev_snp_supported;
 }
 
 void sev_hardware_teardown(void)
