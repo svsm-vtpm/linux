@@ -37,6 +37,8 @@ enum {
  *   bit 3 ==				1: use of reserved bit detected
  *   bit 4 ==				1: fault was an instruction fetch
  *   bit 5 ==				1: protection keys block access
+ *
+ *   bit 31 ==				1: fault was caused due to an RMP permisson error
  */
 enum x86_pf_error_code {
 	X86_PF_PROT	=		1 << 0,
@@ -45,6 +47,7 @@ enum x86_pf_error_code {
 	X86_PF_RSVD	=		1 << 3,
 	X86_PF_INSTR	=		1 << 4,
 	X86_PF_PK	=		1 << 5,
+	X86_PF_RMP	=		1ull << 31,
 };
 
 #endif /* _ASM_X86_TRAP_DEFS_H */
