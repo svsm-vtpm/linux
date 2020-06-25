@@ -4393,6 +4393,8 @@ static struct kvm_x86_ops svm_x86_ops __initdata = {
 	.allow_debug = svm_allow_debug,
 
 	.vcpu_deliver_sipi_vector = svm_vcpu_deliver_sipi_vector,
+
+	.rmp_level_adjust = snp_rmp_level_adjust,
 };
 
 static struct kvm_x86_init_ops svm_init_ops __initdata = {

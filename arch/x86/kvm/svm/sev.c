@@ -2264,3 +2264,20 @@ void sev_es_vcpu_put(struct vcpu_svm *svm)
 		wrmsrl(host_save_user_msrs[i].index, svm->host_user_msrs[i]);
 	}
 }
+
+void snp_rmp_level_adjust(struct kvm_vcpu *vcpu, gfn_t gfn, kvm_pfn_t *pfnp,
+			  int *max_level, bool *allow_prefetch)
+{
+	unsigned long spa = *pfnp << PAGE_SHIFT;
+	struct rmpentry e;
+
+	if (!sev_snp_guest(vcpu->kvm))
+		return;
+
+	/* read the RMP page level for this SPA and adjust the max level accordingly */
+	if (lookup_address_in_rmptable(spa, &e))
+		return;
+
+	*max_level = e.pagelevel;
+	*allow_prefetch = false;
+}

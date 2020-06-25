@@ -597,6 +597,8 @@ void sev_es_init_vmcb(struct vcpu_svm *svm);
 void sev_es_create_vcpu(struct vcpu_svm *svm);
 void sev_es_vcpu_load(struct vcpu_svm *svm, int cpu);
 void sev_es_vcpu_put(struct vcpu_svm *svm);
+void snp_rmp_level_adjust(struct kvm_vcpu *vcpu, gfn_t gfn, kvm_pfn_t *pfnp,
+			  int *max_level, bool *allow_prefetch);
 
 /* vmenter.S */
 
