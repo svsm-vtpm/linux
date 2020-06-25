@@ -30,6 +30,7 @@
 #include <asm/desc.h>			/* store_idt(), ...		*/
 #include <asm/cpu_entry_area.h>		/* exception stack		*/
 #include <asm/pgtable_areas.h>		/* VMALLOC_START, ...		*/
+#include <asm/rmptable.h>		/* lookup_rmpentry ...		*/
 
 #define CREATE_TRACE_POINTS
 #include <asm/trace/exceptions.h>
@@ -145,6 +146,35 @@ is_prefetch(struct pt_regs *regs, unsigned long error_code, unsigned long addr)
 
 DEFINE_SPINLOCK(pgd_lock);
 LIST_HEAD(pgd_list);
+
+static void show_rmpentry(unsigned long address)
+{
+	unsigned int level;
+	unsigned long spa;
+	struct rmpentry e;
+	pgd_t *pgd;
+	pte_t *pte;
+
+	pgd = __va(read_cr3_pa());
+	pgd += pgd_index(address);
+
+	pte = lookup_address_in_pgd(pgd, address, &level);
+	if (!pte || !pte_present(*pte))
+		return;
+
+	switch (level) {
+	case PG_LEVEL_4K: spa = pte_pfn(*pte) << PAGE_SHIFT; break;
+	case PG_LEVEL_2M: spa = pmd_pfn(*(pmd_t *)pte) << PAGE_SHIFT; break;
+	case PG_LEVEL_1G: spa = pud_pfn(*(pud_t *)pte) << PAGE_SHIFT; break;
+	default: return;
+	}
+
+	if (lookup_address_in_rmptable(spa, &e))
+		pr_alert("Failed to read RMP entry for spa 0x%lx\n", spa);
+	else
+		pr_alert("spa 0x%lx: assigned=%d immutable=%d pagesize=%d gpa=0x%llx level=%d\n",
+				spa, e.assigned, e.immutable, e.pagesize, e.gpa, e.pagelevel);
+}
 
 #ifdef CONFIG_X86_32
 static inline pmd_t *vmalloc_sync_one(pgd_t *pgd, unsigned long address)
@@ -648,7 +678,7 @@ show_fault_oops(struct pt_regs *regs, unsigned long error_code, unsigned long ad
 		 !(error_code & X86_PF_PROT) ? "not-present page" :
 		 (error_code & X86_PF_RSVD)  ? "reserved bit violation" :
 		 (error_code & X86_PF_PK)    ? "protection keys violation" :
-		 (error_code & X86_PF_SNP_RMP)   ? "rmp violation" :
+		 (error_code & X86_PF_RMP)   ? "rmp violation" :
 					       "permissions violation");
 
 	if (!(error_code & X86_PF_USER) && user_mode(regs)) {
@@ -681,6 +711,10 @@ show_fault_oops(struct pt_regs *regs, unsigned long error_code, unsigned long ad
 	}
 
 	dump_pagetable(address);
+
+	if (error_code & X86_PF_RMP)
+		show_rmpentry(address);
+
 }
 
 static noinline void
