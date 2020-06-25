@@ -1954,6 +1954,7 @@ int set_memory_4k(unsigned long addr, int numpages)
 	return change_page_attr_set_clr(&addr, numpages, __pgprot(0),
 					__pgprot(0), 1, 0, NULL);
 }
+EXPORT_SYMBOL(set_memory_4k);
 
 int set_memory_nonglobal(unsigned long addr, int numpages)
 {
