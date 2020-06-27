@@ -108,6 +108,9 @@ static inline unsigned long rmptable_page_offset(unsigned long spa)
 	return RMPTABLE_RSVD_BYTES + (RMPTABLE_ENTRY_SZ * (spa >> PAGE_SHIFT));
 }
 
+#define RMP_X86_PG_LEVEL(x)	(((x) == RMP_PG_SIZE_4K) ? PG_LEVEL_4K : PG_LEVEL_2M)
+#define X86_RMP_PG_LEVEL(x)	(((x) == PG_LEVEL_4K) ? RMP_PG_SIZE_4K : RMP_PG_SIZE_2M)
+
 struct rmpentry {
 	u64 gpa;
 	u8 assigned;

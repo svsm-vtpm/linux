@@ -574,6 +574,11 @@ void svm_vcpu_unblocking(struct kvm_vcpu *vcpu);
 #define GHCB_MSR_TERM_REASON_POS	16
 #define GHCB_MSR_TERM_REASON_MASK	0xff
 
+#define GHCB_MSR_SNP_MEM_OP_PRIVATE_REQ		0x006UL
+#define GHCB_MSR_SNP_MEM_OP_SHARED_REQ		0x007UL
+#define GHCB_SNP_MEM_OP_PAGE_SIZE(v)		(((v) >> 63) & 0x1)
+#define GHCB_SNP_MEM_OP_GFN(v)			(((v) >> 12) & 0xffffffffffUL)
+
 extern unsigned int max_sev_asid;
 
 static inline bool svm_sev_enabled(void)

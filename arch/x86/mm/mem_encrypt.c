@@ -34,8 +34,6 @@
 
 #include "mm_internal.h"
 
-#define RMP_X86_PG_LEVEL(x)	(((x) == RMP_PG_SIZE_4K) ? PG_LEVEL_4K : PG_LEVEL_2M)
-
 /*
  * Since SME related variables are set early in the boot process they must
  * reside in the .data section so as not to be zeroed out when the .bss
