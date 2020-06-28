@@ -1406,6 +1406,8 @@ void do_user_addr_fault(struct pt_regs *regs,
 		flags |= FAULT_FLAG_WRITE;
 	if (hw_error_code & X86_PF_INSTR)
 		flags |= FAULT_FLAG_INSTRUCTION;
+	if (hw_error_code & X86_PF_RMP)
+		flags |= FAULT_FLAG_RMP;
 
 #ifdef CONFIG_X86_64
 	/*

@@ -81,6 +81,7 @@
 #include <asm/tlb.h>
 #include <asm/tlbflush.h>
 #include <asm/pgtable.h>
+#include <asm/rmptable.h>
 
 #include "internal.h"
 
@@ -4250,6 +4251,29 @@ unlock:
 	return 0;
 }
 
+static vm_fault_t handle_rmp_fault(struct vm_fault *vmf, unsigned long pfn, int level)
+{
+	struct rmpentry e;
+	int ret = 0;
+
+	/* Read the RMP entry to determine the level for this pfn */
+	if (lookup_address_in_rmptable(pfn << PAGE_SHIFT, &e))
+		return VM_FAULT_SIGSEGV;
+
+	/* If RMP level is less than the current level then split the page */
+	if (e.pagelevel >= level)
+		return VM_FAULT_SIGSEGV;
+
+	if (level == PG_LEVEL_2M)
+		__split_huge_pmd(vmf->vma, vmf->pmd, vmf->address, false, NULL);
+	else if (level == PG_LEVEL_1G)
+		__split_huge_pud(vmf->vma, vmf->pud, vmf->address);
+	else
+		ret = VM_FAULT_SIGSEGV;
+
+	return ret;
+}
+
 /*
  * By the time we get here, we already hold the mm semaphore
  *
@@ -4266,6 +4290,7 @@ static vm_fault_t __handle_mm_fault(struct vm_area_struct *vma,
 		.pgoff = linear_page_index(vma, address),
 		.gfp_mask = __get_fault_gfp_mask(vma),
 	};
+	unsigned int rmp_fault = flags & FAULT_FLAG_RMP;
 	unsigned int dirty = flags & FAULT_FLAG_WRITE;
 	struct mm_struct *mm = vma->vm_mm;
 	pgd_t *pgd;
@@ -4298,6 +4323,10 @@ retry_pud:
 				if (!(ret & VM_FAULT_FALLBACK))
 					return ret;
 			} else {
+				if (rmp_fault)
+					return handle_rmp_fault(&vmf,
+							pud_pfn(*vmf.pud), PG_LEVEL_1G);
+
 				huge_pud_set_accessed(&vmf, orig_pud);
 				return 0;
 			}
@@ -4336,11 +4365,18 @@ retry_pud:
 				if (!(ret & VM_FAULT_FALLBACK))
 					return ret;
 			} else {
+				if (rmp_fault)
+					return handle_rmp_fault(&vmf,
+							pmd_pfn(*vmf.pmd), PG_LEVEL_2M);
 				huge_pmd_set_accessed(&vmf, orig_pmd);
 				return 0;
 			}
 		}
 	}
+
+	/* If we were not able to resolve the RMP fault then ask to SEGV */
+	if (rmp_fault)
+		return VM_FAULT_SIGSEGV;
 
 	return handle_pte_fault(&vmf);
 }
