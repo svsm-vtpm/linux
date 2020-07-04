@@ -5477,8 +5477,11 @@ static int __handle_rmp_page_fault(struct kvm_vcpu *vcpu, gfn_t gfn, u64 spa, in
 	base_gfn = gfn & ~(KVM_PAGES_PER_HPAGE(level) - 1);
 	kvm_zap_gfn_range_locked(vcpu->kvm, base_gfn, base_gfn + KVM_PAGES_PER_HPAGE(level));
 
-	if (e->pagelevel == PG_LEVEL_2M)
+	if (e->pagelevel == PG_LEVEL_2M) {
+		trace_kvm_rmptable_psmash(vcpu->vcpu_id, spa & PMD_MASK, base_gfn,
+				base_gfn + KVM_PAGES_PER_HPAGE(level));
 		return rmptable_psmash(spa & PMD_MASK);
+	}
 
 	return 0;
 }
@@ -5496,6 +5499,8 @@ static int handle_rmp_page_fault(struct kvm_vcpu *vcpu, gpa_t gpa, u64 error_cod
 
 	if (lookup_address_in_rmptable(spa, &e))
 		goto unlock;
+
+	trace_kvm_mmu_rmp_fault(vcpu->vcpu_id, gpa, error_code, spa, level, &e);
 
 	rc = __handle_rmp_page_fault(vcpu, gfn, spa, level, &e);
 	if (rc)

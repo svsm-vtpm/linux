@@ -604,6 +604,8 @@ void sev_es_vcpu_load(struct vcpu_svm *svm, int cpu);
 void sev_es_vcpu_put(struct vcpu_svm *svm);
 void snp_rmp_level_adjust(struct kvm_vcpu *vcpu, gfn_t gfn, kvm_pfn_t *pfnp,
 			  int *max_level, bool *allow_prefetch);
+int snp_page_reclaim(unsigned long spa, int rmp_pagesize);
+void dump_vmcb(struct kvm_vcpu *vcpu);
 
 /* vmenter.S */
 

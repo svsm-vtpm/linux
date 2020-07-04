@@ -46,6 +46,10 @@ struct enc_region {
 	unsigned long size;
 };
 
+/* enable/disable VMCB dump debug support */
+static int dump_all_vmcbs = false;
+module_param(dump_all_vmcbs, int, 0644);
+
 static int sev_flush_asids(void)
 {
 	int ret, error = 0;
@@ -1008,7 +1012,7 @@ e_unpin_memory:
 	return ret;
 }
 
-static int snp_page_reclaim(unsigned long spa, int rmppage_size)
+int snp_page_reclaim(unsigned long spa, int rmppage_size)
 {
 	struct sev_data_snp_page_reclaim *data;
 	struct rmpupdate e = {};
@@ -1675,6 +1679,17 @@ void sev_vm_destroy(struct kvm *kvm)
 	if (!sev_guest(kvm))
 		return;
 
+	if (dump_all_vmcbs) {
+		unsigned int i;
+
+		for (i = 0; i < kvm->created_vcpus; i++) {
+			struct kvm_vcpu *vcpu = kvm->vcpus[i];
+
+			printk("*** DEBUG: %s:%u:%s - vcpu%u before destroy\n", __FILE__, __LINE__, __func__, vcpu->vcpu_id);
+			dump_vmcb(vcpu);
+		}
+	}
+
 	mutex_lock(&kvm->lock);
 
 	/*
@@ -2010,6 +2025,8 @@ static int snp_page_psmash(struct kvm_vcpu *vcpu, gpa_t gpa, u64 spa)
 	gfn_end = gfn_start + PTRS_PER_PMD;
 	kvm_zap_gfn_range_locked(vcpu->kvm, gfn_start, gfn_end);
 
+	trace_kvm_rmptable_psmash(vcpu->vcpu_id, spa & PMD_MASK, gfn_start, gfn_end);
+
 	return rmptable_psmash(spa & PMD_MASK);
 }
 
@@ -2173,6 +2190,8 @@ static int handle_snp_mem_op_proto(struct kvm_vcpu *vcpu, gfn_t gfn, unsigned in
 	gpa = gfn_to_gpa(gfn);
 	gpa_end = gpa + (npages * page_level_size(level));
 
+	trace_kvm_vmgexit_mem_op(vcpu->vcpu_id, mode, gpa, gpa_end, level);
+
 	spin_lock(&kvm->mmu_lock);
 	if (mode == MEM_OP_SNP_SHARED)
 		rc = snp_page_shared(vcpu, gpa, level);
@@ -2196,6 +2215,8 @@ static int __handle_snp_mem_op(struct kvm_vcpu *vcpu, struct vmgexit_mem_op *ent
 	level = RMP_X86_PG_LEVEL(entry->rmp_pagesize);
 	gpa = gfn_to_gpa(entry->gfn);
 	gpa_end = gpa + (entry->npages * page_level_size(level));
+
+	trace_kvm_vmgexit_mem_op(vcpu->vcpu_id, entry->cmd, gpa, gpa_end, level);
 
 	spin_lock(&kvm->mmu_lock);
 	for (; gpa < gpa_end; gpa = next_gpa, i++) {
@@ -2260,6 +2281,8 @@ static int handle_snp_guest_request(struct vcpu_svm *svm, u64 req_gpa, u64 res_g
 		return -ENOMEM;
 
 	/* TODO: ratelimit the request */
+
+	trace_kvm_snp_guest_request(vcpu->vcpu_id, req_gpa, res_gpa);
 
 	/* issue SNP guest request command */
 	data->gctx_paddr = __sme_page_pa(sev->snp_context);

@@ -4,6 +4,7 @@
 
 #include <linux/tracepoint.h>
 #include <linux/trace_events.h>
+#include <asm/rmptable.h>
 
 #undef TRACE_SYSTEM
 #define TRACE_SYSTEM kvmmmu
@@ -383,6 +384,40 @@ TRACE_EVENT(
 		  __entry->gfn, __entry->pfn, __entry->level
 	)
 );
+
+/*
+ * Tracepoint for the RMP fault
+ */
+TRACE_EVENT(kvm_mmu_rmp_fault,
+	TP_PROTO(unsigned int vcpu_id, u64 gpa, u64 error_code, u64 spa, int level,
+		struct rmpentry *e),
+	TP_ARGS(vcpu_id, gpa, error_code, spa, level, e),
+
+	TP_STRUCT__entry(
+		__field(unsigned int, vcpu_id)
+		__field(u64, gpa)
+		__field(u64, error_code)
+		__field(u64, spa)
+		__field(int, level)
+		__field(int, assigned)
+		__field(int, rmplevel)
+	),
+
+	TP_fast_assign(
+		__entry->vcpu_id = vcpu_id;
+		__entry->spa   	 = spa;
+		__entry->gpa     = gpa;
+		__entry->error_code  = error_code;
+		__entry->level   = level;
+		__entry->assigned = e->assigned;
+		__entry->rmplevel = e->pagelevel;
+	),
+
+	TP_printk("vcpu %u, gpa %llx, error %llx, spa %llx, level %d, assigned %d, "
+		  " rmplevel %d", __entry->vcpu_id, __entry->gpa, __entry->error_code,
+		  __entry->spa, __entry->level, __entry->assigned, __entry->rmplevel)
+);
+
 
 #endif /* _TRACE_KVMMMU_H */
 

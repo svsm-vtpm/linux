@@ -1637,6 +1637,81 @@ TRACE_EVENT(kvm_vmgexit_msr_protocol_exit,
 		__entry->vcpu_id, __entry->ghcb_gpa, __entry->result)
 );
 
+/*
+ * Tracepoint for the start of MEM_OP VMGEXIT processing
+ */
+TRACE_EVENT(kvm_vmgexit_mem_op,
+	TP_PROTO(unsigned int vcpu_id, int mode, u64 start, u64 end, int level),
+	TP_ARGS(vcpu_id, mode, start, end, level),
+
+	TP_STRUCT__entry(
+		__field(unsigned int, vcpu_id)
+		__field(int, mode)
+		__field(u64, start)
+		__field(u64, end)
+		__field(int, level)
+	),
+
+	TP_fast_assign(
+		__entry->vcpu_id = vcpu_id;
+		__entry->mode 	 = mode;
+		__entry->start   = start;
+		__entry->end     = end;
+		__entry->level   = level;
+	),
+
+	TP_printk("vcpu %u, mode %u, gpa %llx - %llx, level %d",
+		__entry->vcpu_id, __entry->mode, __entry->start, __entry->end, __entry->level)
+);
+
+
+/*
+ * Tracepoint for the PSMASH
+ */
+TRACE_EVENT(kvm_rmptable_psmash,
+	TP_PROTO(unsigned long vcpu_id, u64 spa, u64 start, u64 end),
+	TP_ARGS(vcpu_id, spa, start, end),
+
+	TP_STRUCT__entry(
+		__field(unsigned int, vcpu_id)
+		__field(u64, spa)
+		__field(u64, start)
+		__field(u64, end)
+	),
+
+	TP_fast_assign(
+		__entry->vcpu_id = vcpu_id;
+		__entry->spa   	 = spa;
+		__entry->start   = start;
+		__entry->end     = end;
+	),
+
+	TP_printk("vcpu %u, spa %llx gfn %llx - %llx",
+		__entry->vcpu_id, __entry->spa, __entry->start, __entry->end)
+);
+
+/*
+ * Tracepoint for the SNP_GUEST_REQUEST
+ */
+TRACE_EVENT(kvm_snp_guest_request,
+	TP_PROTO(unsigned long vcpu_id, u64 request, u64 response),
+	TP_ARGS(vcpu_id, request, response),
+
+	TP_STRUCT__entry(
+		__field(unsigned int, vcpu_id)
+		__field(u64, request)
+		__field(u64, response)
+	),
+
+	TP_fast_assign(
+		__entry->vcpu_id  = vcpu_id;
+		__entry->request  = request;
+		__entry->response = response;
+	),
+
+	TP_printk("vcpu %u, request %llx response %llx",
+		__entry->vcpu_id, __entry->request, __entry->response)
+);
 #endif /* _TRACE_KVM_H */
 
 #undef TRACE_INCLUDE_PATH
