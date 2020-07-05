@@ -19,6 +19,7 @@
 #include <linux/kernel.h>
 #include <linux/bitops.h>
 #include <linux/dma-mapping.h>
+#include <linux/io.h>
 
 #include <asm/tlbflush.h>
 #include <asm/fixmap.h>
@@ -29,8 +30,11 @@
 #include <asm/processor-flags.h>
 #include <asm/msr.h>
 #include <asm/cmdline.h>
+#include <asm/rmptable.h>
 
 #include "mm_internal.h"
+
+#define RMP_X86_PG_LEVEL(x)	(((x) == RMP_PG_SIZE_4K) ? PG_LEVEL_4K : PG_LEVEL_2M)
 
 /*
  * Since SME related variables are set early in the boot process they must
@@ -42,8 +46,12 @@ u64 sev_status __section(.data) = 0;
 EXPORT_SYMBOL(sme_me_mask);
 DEFINE_STATIC_KEY_FALSE(sev_enable_key);
 EXPORT_SYMBOL_GPL(sev_enable_key);
+DEFINE_STATIC_KEY_FALSE(snp_enable_key);
+EXPORT_SYMBOL_GPL(snp_enable_key);
 
 bool sev_enabled __section(.data);
+
+static unsigned long rmptable_start, rmptable_end;
 
 /* Buffer used for early in-place encryption by BSP, no locking needed */
 static char sme_early_buffer[PAGE_SIZE] __initdata __aligned(PAGE_SIZE);
@@ -409,6 +417,95 @@ void __init mem_encrypt_free_decrypted_mem(void)
 	free_init_pages("unused decrypted", vaddr, vaddr_end);
 }
 
+static inline int rmptable_page_level(u64 spa)
+{
+	unsigned long val, vaddr;
+
+	vaddr = rmptable_start + rmptable_page_offset(spa);
+
+	val = *(unsigned long *)vaddr;
+	return RMP_X86_PG_LEVEL((val >> 1) & 1);
+}
+
+int lookup_address_in_rmptable(u64 spa, struct rmpentry *e)
+{
+	unsigned long vaddr, val;
+
+	if (!snp_key_active())
+		return -ENXIO;
+
+	vaddr = rmptable_start + rmptable_page_offset(spa);
+	if (WARN_ON(vaddr > rmptable_end))
+		return -EFAULT;
+
+	val = *(unsigned long *)vaddr;
+
+	e->assigned = val & 1;
+	e->pagesize = (val >> 1) & 1;
+	e->immutable = (val >> 2) & 1;
+	e->gpa = val & 0x7FFFFFFFFF000;
+	e->asid = (val >> 51) & 0x3FF;
+	e->pagelevel = RMP_X86_PG_LEVEL(e->pagesize);
+
+	/* 
+	 * If spa is not a base of a large page then read base page to determine
+	 * whether spa is part of a large RMP entry.
+	 */
+	if (!IS_ALIGNED(spa, PMD_SIZE))
+		e->pagelevel = rmptable_page_level(spa & PMD_MASK);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(lookup_address_in_rmptable);
+
+static __init void snp_enable(void *arg)
+{
+	u64 val;
+
+	rdmsrl_safe(MSR_K8_SYSCFG, &val);
+
+	val |= MSR_K8_SYSCFG_MEM_ENCRYPT;
+	val |= MSR_K8_SYSCFG_SNP_EN;
+	val |= MSR_K8_SYSCFG_SNP_VMPL_EN;
+
+	wrmsrl(MSR_K8_SYSCFG, val);
+}
+
+static __init int rmptable_init(void)
+{
+	u64 rmp_base, rmp_end;
+	unsigned long sz;
+	void *start;
+
+	rdmsrl_safe(MSR_AMD64_RMP_BASE, &rmp_base);
+	rdmsrl_safe(MSR_AMD64_RMP_END, &rmp_end);
+
+	if (!rmp_base || !rmp_end) {
+		pr_err("RMP table MSRs are not set.\n");
+		return 1;
+	}
+
+	sz = rmp_end - rmp_base;
+
+	start = memremap(rmp_base, sz, MEMREMAP_WB);
+	if (!start) {
+		pr_err("Failed to map RMP table 0x%llx-0x%llx\n", rmp_base, rmp_end);
+		return 1;
+	}
+
+	/* initialize the RMP table to zero */
+	memset(start, 0, sz);
+
+	/* flush the caches to ensure that data is written before we enable the SNP */
+	wbinvd_on_all_cpus();
+
+	rmptable_start = (unsigned long)start;
+	rmptable_end = rmptable_start + sz;
+
+	pr_info("RMP: physical 0x%llx - 0x%llx\n", rmp_base, rmp_end);
+	return 0;
+}
+
 static void print_mem_encrypt_feature_info(void)
 {
 	pr_info("AMD Memory Encryption Features active:");
@@ -433,6 +530,22 @@ static void print_mem_encrypt_feature_info(void)
 
 	pr_cont("\n");
 }
+
+static int __init mem_encrypt_snp_init(void)
+{
+	if (!boot_cpu_has(X86_FEATURE_SEV_SNP))
+		return 1;
+
+	if (rmptable_init())
+		return 1;
+
+	on_each_cpu(snp_enable, NULL, 1);
+
+	static_branch_enable(&snp_enable_key);
+
+	return 0;
+}
+late_initcall(mem_encrypt_snp_init);
 
 void __init mem_encrypt_init(void)
 {
