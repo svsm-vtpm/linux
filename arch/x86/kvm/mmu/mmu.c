@@ -47,6 +47,7 @@
 #include <asm/io.h>
 #include <asm/vmx.h>
 #include <asm/kvm_page_track.h>
+#include <asm/rmptable.h>
 #include "trace.h"
 
 extern bool itlb_multihit_kvm_mitigation;
@@ -5433,6 +5434,78 @@ int kvm_mmu_unprotect_page_virt(struct kvm_vcpu *vcpu, gva_t gva)
 }
 EXPORT_SYMBOL_GPL(kvm_mmu_unprotect_page_virt);
 
+static int kvm_mmu_get_spa(struct kvm_vcpu *vcpu, gfn_t gfn, u64 *spa, int *levelp)
+{
+	struct kvm_shadow_walk_iterator it;
+	u64 spte;
+
+	/* iterate through shadow entry to find the spte and level for this gpa */
+	walk_shadow_page_lockless_begin(vcpu);
+	for_each_shadow_entry_lockless(vcpu, gfn_to_gpa(gfn), it, spte)
+		*levelp = it.level;
+	walk_shadow_page_lockless_end(vcpu);
+
+	if (!is_shadow_present_pte(*it.sptep))
+		return -1;
+
+	*spa = spte_to_pfn(*it.sptep) << PAGE_SHIFT;
+	if (*levelp > PT_PAGE_TABLE_LEVEL) {
+		u64 page_mask = KVM_PAGES_PER_HPAGE(*levelp) - KVM_PAGES_PER_HPAGE(*levelp - 1);
+		*spa |= (gfn & page_mask) << PAGE_SHIFT;
+	}
+
+	return 0;
+}
+
+static int __handle_rmp_page_fault(struct kvm_vcpu *vcpu, gfn_t gfn, u64 spa, int level,
+				   struct rmpentry *e)
+{
+	gfn_t base_gfn;
+
+	/*
+	 * The handler should cover all the following cases:
+	 * +-----------+-----------+------+-------------------------------------------------------------+
+	 * | it.level  | rmp.level | Cbit | reason        						|
+	 * +-----------+-----------+------+-------------------------------------------------------------+
+	 * |  4k       |  2M       | 1    |               						|
+	 * +-----------+-----------+------+-------------------------------------------------------------+
+	 * |  2M       |  4K       | 1    |               						|
+	 * +-----------+-----------+------+-------------------------------------------------------------+
+	 * |  2M       |  2M       | 1    | Guest maybe trying to validate the range as 4K              |
+	 * +-----------+-----------+------+-------------------------------------------------------------+
+	 */
+	base_gfn = gfn & ~(KVM_PAGES_PER_HPAGE(level) - 1);
+	kvm_zap_gfn_range_locked(vcpu->kvm, base_gfn, base_gfn + KVM_PAGES_PER_HPAGE(level));
+
+	if (e->pagelevel == PG_LEVEL_2M)
+		return rmptable_psmash(spa & PMD_MASK);
+
+	return 0;
+}
+
+static int handle_rmp_page_fault(struct kvm_vcpu *vcpu, gpa_t gpa, u64 error_code)
+{
+	gfn_t gfn = gpa_to_gfn(gpa);
+	struct rmpentry e;
+	int level, rc;
+	u64 spa;
+
+	spin_lock(&vcpu->kvm->mmu_lock);
+	if (kvm_mmu_get_spa(vcpu, gfn, &spa, &level))
+		goto unlock;
+
+	if (lookup_address_in_rmptable(spa, &e))
+		goto unlock;
+
+	rc = __handle_rmp_page_fault(vcpu, gfn, spa, level, &e);
+	if (rc)
+		pr_alert("%s gpa 0x%llx code 0x%llx spa 0x%llx level %d(%d) rc=%d\n",
+			__func__, gpa, error_code, spa, level, e.pagelevel, rc);
+unlock:
+	spin_unlock(&vcpu->kvm->mmu_lock);
+	return RET_PF_RETRY;
+}
+
 int kvm_mmu_page_fault(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa, u64 error_code,
 		       void *insn, int insn_len)
 {
@@ -5441,6 +5514,14 @@ int kvm_mmu_page_fault(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa, u64 error_code,
 
 	if (WARN_ON(!VALID_PAGE(vcpu->arch.mmu->root_hpa)))
 		return RET_PF_RETRY;
+
+	if (unlikely(error_code & PFERR_GUEST_RMP_MASK)) {
+		r = handle_rmp_page_fault(vcpu, cr2_or_gpa, error_code);
+		if (r == RET_PF_RETRY)
+			return 1;
+		else
+			return r;
+	}
 
 	r = RET_PF_INVALID;
 	if (unlikely(error_code & PFERR_RSVD_MASK)) {
