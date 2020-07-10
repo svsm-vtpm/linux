@@ -2005,7 +2005,6 @@ static int gfn_to_spa(struct kvm_vcpu *vcpu, gfn_t gfn, int *level, u64 *spa)
 static int snp_page_psmash(struct kvm_vcpu *vcpu, gpa_t gpa, u64 spa)
 {
 	gfn_t gfn_start, gfn_end;
-	int rc;
 
 	gfn_start = gpa_to_gfn(gpa) & ~(KVM_PAGES_PER_HPAGE(PT_DIRECTORY_LEVEL) - 1);
 	gfn_end = gfn_start + PTRS_PER_PMD;
@@ -2221,6 +2220,64 @@ static int __handle_snp_mem_op(struct kvm_vcpu *vcpu, struct vmgexit_mem_op *ent
 	spin_unlock(&kvm->mmu_lock);
 
 	return 0;
+}
+
+static int handle_snp_guest_request(struct vcpu_svm *svm, u64 req_gpa, u64 res_gpa)
+{
+	struct sev_data_snp_guest_request *data;
+	struct kvm_vcpu *vcpu = &svm->vcpu;
+	struct kvm *kvm = vcpu->kvm;
+	struct kvm_sev_info *sev;
+	kvm_pfn_t req_pfn, res_pfn;
+	struct rmpupdate e = {};
+	int ret, fw_err = 0;
+	u64 spa;
+
+	sev = &to_kvm_svm(vcpu->kvm)->sev_info;
+
+	if (!sev_snp_guest(vcpu->kvm))
+		return -EINVAL;
+
+	req_pfn = gfn_to_pfn(kvm, gpa_to_gfn(req_gpa));
+	if (is_error_noslot_pfn(req_pfn))
+		return -EINVAL;
+
+	res_pfn = gfn_to_pfn(kvm, gpa_to_gfn(res_gpa));
+	if (is_error_noslot_pfn(res_pfn))
+		return -EINVAL;
+
+	/* set the immutable bit in the rmptable */
+	spa = res_pfn << PAGE_SHIFT;
+	e.immutable = true;
+	e.assigned = true;
+	if ((ret = rmptable_update(spa, &e))) {
+		pr_err("SNP: failed to update rmptable spa 0x%llx rc=%d\n", spa, ret);
+		return -EINVAL;
+	}
+
+	data = kzalloc(sizeof(*data), GFP_KERNEL_ACCOUNT);
+	if (!data)
+		return -ENOMEM;
+
+	/* TODO: ratelimit the request */
+
+	/* issue SNP guest request command */
+	data->gctx_paddr = __sme_page_pa(sev->snp_context);
+	data->req_paddr = (req_pfn << PAGE_SHIFT) | sme_me_mask;
+	data->res_paddr = spa | sme_me_mask;
+	ret = sev_issue_cmd(vcpu->kvm, SEV_CMD_SNP_GUEST_REQUEST, data, &fw_err);
+
+	/* clear the immutable bit set for the response page */
+	ret = snp_page_reclaim(spa, RMP_PG_SIZE_4K);
+	if (ret)
+		pr_err("SNP: failed to reclaim spa 0x%llx ret %d\n", spa, ret);
+
+	/* If there was a firmware error then return FW error code */
+	if (fw_err)
+		ret = fw_err;
+
+	kfree(data);
+	return ret;
 }
 
 static int handle_snp_mem_op(struct vcpu_svm *svm, uint8_t *data)
@@ -2456,6 +2513,14 @@ int sev_handle_vmgexit(struct vcpu_svm *svm)
 
 		handle_snp_mem_op(svm, svm->ghcb_sa);
 
+		ret = 1;
+		break;
+	}
+	case SVM_VMGEXIT_SNP_GUEST_REQ: {
+		int psp_ret;
+
+		psp_ret = handle_snp_guest_request(svm, control->exit_info_1, control->exit_info_2);
+		ghcb_set_sw_exit_info_2(svm->ghcb, psp_ret);
 		ret = 1;
 		break;
 	}

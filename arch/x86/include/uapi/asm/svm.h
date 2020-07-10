@@ -110,6 +110,7 @@
 
 /* SEV-SNP software-defined VMGEXIT events */
 #define SVM_VMGEXIT_SNP_MEM_OP			0x80000006
+#define SVM_VMGEXIT_SNP_GUEST_REQ		0x80000007
 #define SVM_VMGEXIT_UNSUPPORTED_EVENT		0x8000ffff
 
 #define SVM_EXIT_ERR           -1
