@@ -20,6 +20,7 @@
 #include <linux/kernel.h>
 #include <linux/mm.h>
 #include <linux/xarray.h>
+#include <linux/psp-sev-guest.h>
 
 #include <generated/asm-offsets.h>
 #include <asm/cpu_entry_area.h>
@@ -639,6 +640,29 @@ int __init early_snp_set_memory_shared(unsigned long paddr, unsigned int npages)
 	return snp_set_memory_private_shared((unsigned long)__va(paddr), npages,
 			MEM_OP_SNP_SHARED);
 }
+
+int vmgexit_snp_guest_request(unsigned long request, unsigned long response)
+{
+	struct ghcb_state state;
+	enum es_result ret;
+	struct ghcb *ghcb;
+	int fw_err;
+
+	if (!sev_snp_active())
+		return -ENXIO;
+
+	ghcb = sev_es_get_ghcb(&state);
+
+	ret = sev_es_ghcb_hv_call(ghcb, NULL, SVM_VMGEXIT_SNP_GUEST_REQ,
+			__pa(request), __pa(response));
+	fw_err = ghcb->save.sw_exit_info_2;
+	if (ret != ES_OK)
+		fw_err = -ENXIO;
+
+	sev_es_put_ghcb(&state);
+	return fw_err;
+}
+EXPORT_SYMBOL_GPL(vmgexit_snp_guest_request);
 
 /*
  * This function runs on the first #VC exception after the kernel
