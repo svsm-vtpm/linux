@@ -623,6 +623,11 @@ DECLARE_IDTENTRY_XEN(X86_TRAP_DB,	debug);
 /* #DF */
 DECLARE_IDTENTRY_DF(X86_TRAP_DF,	exc_double_fault);
 
+/* #VC */
+#ifdef CONFIG_AMD_MEM_ENCRYPT
+DECLARE_IDTENTRY_VC(X86_TRAP_VC,	exc_vmm_communication);
+#endif
+
 #ifdef CONFIG_XEN_PV
 DECLARE_IDTENTRY_XENCB(X86_TRAP_OTHER,	exc_xen_hypervisor_callback);
 #endif
