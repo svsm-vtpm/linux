@@ -349,15 +349,26 @@ struct vmcb {
 #define DEFINE_GHCB_ACCESSORS(field)						\
 	static inline bool ghcb_##field##_is_valid(const struct ghcb *ghcb)	\
 	{									\
+		const struct vmcb_save_area *vmsa = &ghcb->save;		\
+										\
 		return test_bit(GHCB_BITMAP_IDX(field),				\
-				(unsigned long *)&ghcb->save.valid_bitmap);	\
+				(unsigned long *)vmsa->valid_bitmap);		\
+	}									\
+										\
+	static inline u64 ghcb_get_##field(struct ghcb *ghcb)			\
+	{									\
+		const struct vmcb_save_area *vmsa = &ghcb->save;		\
+										\
+		return vmsa->field;						\
 	}									\
 										\
 	static inline void ghcb_set_##field(struct ghcb *ghcb, u64 value)	\
 	{									\
+		struct vmcb_save_area *vmsa = &ghcb->save;			\
+										\
 		__set_bit(GHCB_BITMAP_IDX(field),				\
 			  (unsigned long *)&ghcb->save.valid_bitmap);		\
-		ghcb->save.field = value;					\
+		vmsa->field = value;						\
 	}
 
 DEFINE_GHCB_ACCESSORS(cpl)
