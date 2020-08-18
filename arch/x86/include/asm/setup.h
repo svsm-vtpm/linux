@@ -51,6 +51,7 @@ extern unsigned long __startup_secondary_64(void);
 extern void startup_64_setup_env(unsigned long physbase);
 extern void early_idt_setup_early_handler(unsigned long physaddr);
 extern void early_load_idt(void);
+extern void early_idt_setup(unsigned long physbase);
 
 #ifdef CONFIG_X86_INTEL_MID
 extern void x86_intel_mid_early_setup(void);
