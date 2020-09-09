@@ -380,6 +380,7 @@ static void iommu_set_cwwb_range(struct amd_iommu *iommu)
 	 * Default to 4 Kbytes, which can be specified by setting base
 	 * address equal to the limit address.
 	 */
+	entry = (start + 4096) & PM_ADDR_MASK;
 	memcpy_toio(iommu->mmio_base + MMIO_EXCL_LIMIT_OFFSET,
 		    &entry, sizeof(entry));
 }

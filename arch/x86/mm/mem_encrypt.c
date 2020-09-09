@@ -495,6 +495,7 @@ static __init void snp_enable(void *arg)
 	val |= MSR_K8_SYSCFG_SNP_VMPL_EN;
 
 	wrmsrl(MSR_K8_SYSCFG, val);
+	wrmsrl(MSR_VM_HSAVE_PA, 0);
 }
 
 static __init int rmptable_init(void)
