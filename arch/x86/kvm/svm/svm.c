@@ -1301,6 +1301,14 @@ static int svm_create_vcpu(struct kvm_vcpu *vcpu)
 		vmsa_page = alloc_page(GFP_KERNEL_ACCOUNT | __GFP_ZERO);
 		if (!vmsa_page)
 			goto error_free_hsave_page;
+
+		/*
+		 * SEV-ES guests maintain an encrypted version of their FPU
+		 * state which is restored and saved on VMRUN and VMEXIT.
+		 * Free the fpu structure to prevent KVM from attempting to
+		 * access the FPU state.
+		 */
+		kvm_free_guest_fpu(vcpu);
 	}
 
 	err = avic_init_vcpu(svm);
@@ -3792,6 +3800,7 @@ static __no_kcsan fastpath_t svm_vcpu_run(struct kvm_vcpu *vcpu)
 		svm_set_dr6(svm, DR6_FIXED_1 | DR6_RTM);
 
 	clgi();
+
 	kvm_load_guest_xsave_state(vcpu);
 
 	kvm_wait_lapic_expire(vcpu);
@@ -3837,6 +3846,7 @@ static __no_kcsan fastpath_t svm_vcpu_run(struct kvm_vcpu *vcpu)
 		kvm_before_interrupt(&svm->vcpu);
 
 	kvm_load_host_xsave_state(vcpu);
+
 	stgi();
 
 	/* Any pending NMI will happen here */
