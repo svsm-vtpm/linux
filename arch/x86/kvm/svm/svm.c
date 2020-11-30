@@ -4314,6 +4314,7 @@ static struct kvm_x86_ops svm_x86_ops __initdata = {
 	.msr_filter_changed = svm_msr_filter_changed,
 
 	.page_enc_status_hc = svm_page_enc_status_hc,
+	.get_page_enc_bitmap = svm_get_page_enc_bitmap,
 };
 
 static struct kvm_x86_init_ops svm_init_ops __initdata = {
