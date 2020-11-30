@@ -7722,6 +7722,7 @@ static struct kvm_x86_ops vmx_x86_ops __initdata = {
 
 	.msr_filter_changed = vmx_msr_filter_changed,
 	.cpu_dirty_log_size = vmx_cpu_dirty_log_size,
+	.page_enc_status_hc = NULL,
 };
 
 static __init int hardware_setup(void)
