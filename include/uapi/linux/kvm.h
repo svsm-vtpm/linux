@@ -1574,6 +1574,7 @@ struct kvm_pv_cmd {
 #define KVM_RESET_DIRTY_RINGS		_IO(KVMIO, 0xc7)
 
 #define KVM_GET_PAGE_ENC_BITMAP	_IOW(KVMIO, 0xc8, struct kvm_page_enc_bitmap)
+#define KVM_SET_PAGE_ENC_BITMAP	_IOW(KVMIO, 0xc9, struct kvm_page_enc_bitmap)
 
 /* Secure Encrypted Virtualization command */
 enum sev_cmd_id {
