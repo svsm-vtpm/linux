@@ -45,6 +45,11 @@ struct enc_region {
 	unsigned long size;
 };
 
+struct shared_region {
+	struct list_head list;
+	unsigned long gfn_start, gfn_end;
+};
+
 static int sev_flush_asids(void)
 {
 	int ret, error = 0;
@@ -196,6 +201,8 @@ static int sev_guest_init(struct kvm *kvm, struct kvm_sev_cmd *argp)
 	sev->active = true;
 	sev->asid = asid;
 	INIT_LIST_HEAD(&sev->regions_list);
+	INIT_LIST_HEAD(&sev->shared_pages_list);
+	sev->shared_pages_list_count = 0;
 
 	return 0;
 
@@ -1473,6 +1480,148 @@ static int sev_receive_finish(struct kvm *kvm, struct kvm_sev_cmd *argp)
 	return ret;
 }
 
+static int remove_shared_region(unsigned long start, unsigned long end,
+				struct list_head *head)
+{
+	struct shared_region *pos;
+
+	list_for_each_entry(pos, head, list) {
+		if (pos->gfn_start == start &&
+		    pos->gfn_end == end) {
+			list_del(&pos->list);
+			kfree(pos);
+			return -1;
+		} else if (start >= pos->gfn_start && end <= pos->gfn_end) {
+			if (start == pos->gfn_start)
+				pos->gfn_start = end + 1;
+			else if (end == pos->gfn_end)
+				pos->gfn_end = start - 1;
+			else {
+				/* Do a de-merge -- split linked list nodes */
+				unsigned long tmp;
+				struct shared_region *shrd_region;
+
+				tmp = pos->gfn_end;
+				pos->gfn_end = start-1;
+				shrd_region = kzalloc(sizeof(*shrd_region), GFP_KERNEL_ACCOUNT);
+				if (!shrd_region)
+					return -ENOMEM;
+				shrd_region->gfn_start = end + 1;
+				shrd_region->gfn_end = tmp;
+				list_add(&shrd_region->list, &pos->list);
+				return 1;
+			}
+			return 0;
+		}
+	}
+	return 0;
+}
+
+static int add_shared_region(unsigned long start, unsigned long end,
+			     struct list_head *shared_pages_list)
+{
+	struct list_head *head = shared_pages_list;
+	struct shared_region *shrd_region;
+	struct shared_region *pos;
+
+	if (list_empty(head)) {
+		shrd_region = kzalloc(sizeof(*shrd_region), GFP_KERNEL_ACCOUNT);
+		if (!shrd_region)
+			return -ENOMEM;
+		shrd_region->gfn_start = start;
+		shrd_region->gfn_end = end;
+		list_add_tail(&shrd_region->list, head);
+		return 1;
+	}
+
+	/*
+	 * Shared pages list is a sorted list in ascending order of
+	 * guest PA's and also merges consecutive range of guest PA's
+	 */
+	list_for_each_entry(pos, head, list) {
+		if (pos->gfn_end < start)
+			continue;
+		/* merge consecutive guest PA(s) */
+		if (pos->gfn_start <= start && pos->gfn_end >= start) {
+			pos->gfn_end = end;
+			return 0;
+		}
+		break;
+	}
+	/*
+	 * Add a new node, allocate nodes using GFP_KERNEL_ACCOUNT so that
+	 * kernel memory can be tracked/throttled in case a
+	 * malicious guest makes infinite number of hypercalls to
+	 * exhaust host kernel memory and cause a DOS attack.
+	 */
+	shrd_region = kzalloc(sizeof(*shrd_region), GFP_KERNEL_ACCOUNT);
+	if (!shrd_region)
+		return -ENOMEM;
+	shrd_region->gfn_start = start;
+	shrd_region->gfn_end = end;
+	list_add_tail(&shrd_region->list, &pos->list);
+	return 1;
+}
+
+int svm_page_enc_status_hc(struct kvm *kvm, unsigned long gpa,
+			   unsigned long npages, unsigned long enc)
+{
+	struct kvm_sev_info *sev = &to_kvm_svm(kvm)->sev_info;
+	kvm_pfn_t pfn_start, pfn_end;
+	gfn_t gfn_start, gfn_end;
+	int ret = 0;
+
+	if (!sev_guest(kvm))
+		return -EINVAL;
+
+	if (!npages)
+		return 0;
+
+	gfn_start = gpa_to_gfn(gpa);
+	gfn_end = gfn_start + npages;
+
+	/* out of bound access error check */
+	if (gfn_end <= gfn_start)
+		return -EINVAL;
+
+	/* lets make sure that gpa exist in our memslot */
+	pfn_start = gfn_to_pfn(kvm, gfn_start);
+	pfn_end = gfn_to_pfn(kvm, gfn_end);
+
+	if (is_error_noslot_pfn(pfn_start) && !is_noslot_pfn(pfn_start)) {
+		/*
+		 * Allow guest MMIO range(s) to be added
+		 * to the shared pages list.
+		 */
+		return -EINVAL;
+	}
+
+	if (is_error_noslot_pfn(pfn_end) && !is_noslot_pfn(pfn_end)) {
+		/*
+		 * Allow guest MMIO range(s) to be added
+		 * to the shared pages list.
+		 */
+		return -EINVAL;
+	}
+
+	mutex_lock(&kvm->lock);
+
+	if (enc) {
+		ret = remove_shared_region(gfn_start, gfn_end,
+					   &sev->shared_pages_list);
+		if (ret != -ENOMEM)
+			sev->shared_pages_list_count += ret;
+	} else {
+		ret = add_shared_region(gfn_start, gfn_end,
+					&sev->shared_pages_list);
+		if (ret > 0)
+			sev->shared_pages_list_count++;
+	}
+
+	mutex_unlock(&kvm->lock);
+	return ret;
+}
+
 int svm_mem_enc_op(struct kvm *kvm, void __user *argp)
 {
 	struct kvm_sev_cmd sev_cmd;
@@ -1693,6 +1842,7 @@ void sev_vm_destroy(struct kvm *kvm)
 
 	sev_unbind_asid(kvm, sev->handle);
 	sev_asid_free(sev->asid);
+	sev->shared_pages_list_count = 0;
 }
 
 void __init sev_hardware_setup(void)
