@@ -4701,6 +4701,25 @@ This list can be used during the guest migration. If the page
 is private then the userspace need to use SEV migration commands to transmit
 the page.
 
+4.126 KVM_SET_SHARED_PAGES_LIST (vm ioctl)
+---------------------------------------
+
+:Capability: basic
+:Architectures: x86
+:Type: vm ioctl
+:Parameters: struct kvm_shared_pages_list (in/out)
+:Returns: 0 on success, -1 on error
+
+/* for KVM_SET_SHARED_PAGES_LIST */
+struct kvm_shared_pages_list {
+	int __user *pnents;
+	void __user *buffer;
+	__u32 size;
+};
+
+During the guest live migration the outgoing guest exports its unencrypted
+memory regions list, the KVM_SET_SHARED_PAGES_LIST can be used to build the
+shared/unencrypted regions list for an incoming guest.
 
 4.125 KVM_S390_PV_COMMAND
 -------------------------
@@ -4854,7 +4873,6 @@ into user space.
 
 If a vCPU is in running state while this ioctl is invoked, the vCPU may
 experience inconsistent filtering behavior on MSR accesses.
-
 
 5. The kvm_run structure
 ========================

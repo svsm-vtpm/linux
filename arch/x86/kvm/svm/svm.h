@@ -478,6 +478,7 @@ void sync_nested_vmcb_control(struct vcpu_svm *svm);
 int svm_page_enc_status_hc(struct kvm *kvm, unsigned long gpa,
                            unsigned long npages, unsigned long enc);
 int svm_get_shared_pages_list(struct kvm *kvm, struct kvm_shared_pages_list *list);
+int svm_set_shared_pages_list(struct kvm *kvm, struct kvm_shared_pages_list *list);
 
 extern struct kvm_x86_nested_ops svm_nested_ops;
 

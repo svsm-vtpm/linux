@@ -5731,6 +5731,18 @@ set_pit2_out:
 			r = kvm_x86_ops.get_shared_pages_list(kvm, &list);
 		break;
 	}
+	case KVM_SET_SHARED_PAGES_LIST: {
+		struct kvm_shared_pages_list list;
+
+		r = -EFAULT;
+		if (copy_from_user(&list, argp, sizeof(list)))
+			goto out;
+
+		r = -ENOTTY;
+		if (kvm_x86_ops.set_shared_pages_list)
+			r = kvm_x86_ops.set_shared_pages_list(kvm, &list);
+		break;
+	}
 	default:
 		r = -ENOTTY;
 	}

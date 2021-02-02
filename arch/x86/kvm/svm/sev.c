@@ -1672,6 +1672,76 @@ out:
 	return ret;
 }
 
+int svm_set_shared_pages_list(struct kvm *kvm,
+			      struct kvm_shared_pages_list *list)
+{
+	struct kvm_sev_info *sev = &to_kvm_svm(kvm)->sev_info;
+	struct shared_region_array_entry *array;
+	struct shared_region *shrd_region;
+	int ret, nents, i;
+	unsigned long sz;
+
+	if (!sev_guest(kvm))
+		return -ENOTTY;
+
+	if (get_user(nents, list->pnents))
+		return -EFAULT;
+
+	/* special case of resetting the shared pages list */
+	if (!list->buffer || !nents) {
+		struct shared_region *pos;
+
+		mutex_lock(&kvm->lock);
+		list_for_each_entry(pos, &sev->shared_pages_list, list)
+			kfree(pos);
+		sev->shared_pages_list_count = 0;
+		mutex_unlock(&kvm->lock);
+
+		return 0;
+	}
+
+	sz = nents * sizeof(struct shared_region_array_entry);
+	array = kmalloc(sz, GFP_KERNEL);
+	if (!array)
+		return -ENOMEM;
+
+	ret = -EFAULT;
+	if (copy_from_user(array, list->buffer, sz))
+		goto out;
+
+	ret = 0;
+	mutex_lock(&kvm->lock);
+	for (i = 0; i < nents; i++) {
+		shrd_region = kzalloc(sizeof(*shrd_region), GFP_KERNEL_ACCOUNT);
+		if (!shrd_region) {
+			struct shared_region *pos;
+
+			/* Freeing previously allocated entries */
+			list_for_each_entry(pos,
+					    &sev->shared_pages_list,
+					    list) {
+				kfree(pos);
+			}
+
+			mutex_unlock(&kvm->lock);
+			ret = -ENOMEM;
+			goto out;
+		}
+
+		shrd_region->gfn_start = array[i].gfn_start;
+		shrd_region->gfn_end = array[i].gfn_end;
+		list_add_tail(&shrd_region->list,
+			      &sev->shared_pages_list);
+	}
+	sev->shared_pages_list_count = nents;
+	mutex_unlock(&kvm->lock);
+
+out:
+	kfree(array);
+
+	return ret;
+}
+
 int svm_mem_enc_op(struct kvm *kvm, void __user *argp)
 {
 	struct kvm_sev_cmd sev_cmd;

@@ -1305,6 +1305,8 @@ struct kvm_x86_ops {
 				  unsigned long sz, unsigned long mode);
 	int (*get_shared_pages_list)(struct kvm *kvm,
 				     struct kvm_shared_pages_list *list);
+	int (*set_shared_pages_list)(struct kvm *kvm,
+				     struct kvm_shared_pages_list *list);
 };
 
 struct kvm_x86_nested_ops {

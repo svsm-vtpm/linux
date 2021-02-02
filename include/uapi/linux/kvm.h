@@ -1573,6 +1573,7 @@ struct kvm_pv_cmd {
 #define KVM_RESET_DIRTY_RINGS		_IO(KVMIO, 0xc7)
 
 #define KVM_GET_SHARED_PAGES_LIST	_IOW(KVMIO, 0xc8, struct kvm_shared_pages_list)
+#define KVM_SET_SHARED_PAGES_LIST	_IOW(KVMIO, 0xc9, struct kvm_shared_pages_list)
 
 /* Secure Encrypted Virtualization command */
 enum sev_cmd_id {
