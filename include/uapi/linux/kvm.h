@@ -544,6 +544,13 @@ struct kvm_clear_dirty_log {
 	};
 };
 
+/* for KVM_GET_SHARED_PAGES_LIST */
+struct kvm_shared_pages_list {
+	int __user *pnents;
+	void __user *buffer;
+	__u32 size;
+};
+
 /* for KVM_SET_SIGNAL_MASK */
 struct kvm_signal_mask {
 	__u32 len;
@@ -1564,6 +1571,8 @@ struct kvm_pv_cmd {
 
 /* Available with KVM_CAP_DIRTY_LOG_RING */
 #define KVM_RESET_DIRTY_RINGS		_IO(KVMIO, 0xc7)
+
+#define KVM_GET_SHARED_PAGES_LIST	_IOW(KVMIO, 0xc8, struct kvm_shared_pages_list)
 
 /* Secure Encrypted Virtualization command */
 enum sev_cmd_id {

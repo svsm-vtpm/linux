@@ -4538,6 +4538,7 @@ static struct kvm_x86_ops svm_x86_ops __initdata = {
 	.vcpu_deliver_sipi_vector = svm_vcpu_deliver_sipi_vector,
 
 	.page_enc_status_hc = svm_page_enc_status_hc,
+	.get_shared_pages_list = svm_get_shared_pages_list,
 };
 
 static struct kvm_x86_init_ops svm_init_ops __initdata = {

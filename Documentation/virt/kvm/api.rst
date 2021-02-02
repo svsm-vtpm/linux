@@ -4677,6 +4677,30 @@ This ioctl resets VCPU registers and control structures according to
 the clear cpu reset definition in the POP. However, the cpu is not put
 into ESA mode. This reset is a superset of the initial reset.
 
+4.125 KVM_GET_SHARED_PAGES_LIST (vm ioctl)
+---------------------------------------
+
+:Capability: basic
+:Architectures: x86
+:Type: vm ioctl
+:Parameters: struct kvm_shared_pages_list (in/out)
+:Returns: 0 on success, -1 on error
+
+/* for KVM_GET_SHARED_PAGES_LIST */
+struct kvm_shared_pages_list {
+	int __user *pnents;
+	void __user *buffer;
+	__u32 size;
+};
+
+The encrypted VMs have the concept of private and shared pages. The private
+pages are encrypted with the guest-specific key, while the shared pages may
+be encrypted with the hypervisor key. The KVM_GET_SHARED_PAGES_LIST can
+be used to get guest's shared/unencrypted memory regions list.
+This list can be used during the guest migration. If the page
+is private then the userspace need to use SEV migration commands to transmit
+the page.
+
 
 4.125 KVM_S390_PV_COMMAND
 -------------------------

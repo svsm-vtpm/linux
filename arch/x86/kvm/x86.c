@@ -5719,6 +5719,18 @@ set_pit2_out:
 	case KVM_X86_SET_MSR_FILTER:
 		r = kvm_vm_ioctl_set_msr_filter(kvm, argp);
 		break;
+	case KVM_GET_SHARED_PAGES_LIST: {
+		struct kvm_shared_pages_list list;
+
+		r = -EFAULT;
+		if (copy_from_user(&list, argp, sizeof(list)))
+			goto out;
+
+		r = -ENOTTY;
+		if (kvm_x86_ops.get_shared_pages_list)
+			r = kvm_x86_ops.get_shared_pages_list(kvm, &list);
+		break;
+	}
 	default:
 		r = -ENOTTY;
 	}

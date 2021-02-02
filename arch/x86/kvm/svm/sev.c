@@ -50,6 +50,11 @@ struct shared_region {
 	unsigned long gfn_start, gfn_end;
 };
 
+struct shared_region_array_entry {
+	unsigned long gfn_start;
+	unsigned long gfn_end;
+};
+
 static int sev_flush_asids(void)
 {
 	int ret, error = 0;
@@ -1619,6 +1624,51 @@ int svm_page_enc_status_hc(struct kvm *kvm, unsigned long gpa,
 	}
 
 	mutex_unlock(&kvm->lock);
+	return ret;
+}
+
+int svm_get_shared_pages_list(struct kvm *kvm,
+			      struct kvm_shared_pages_list *list)
+{
+	struct kvm_sev_info *sev = &to_kvm_svm(kvm)->sev_info;
+	struct shared_region_array_entry *array;
+	struct shared_region *pos;
+	int ret, nents = 0;
+	unsigned long sz;
+
+	if (!sev_guest(kvm))
+		return -ENOTTY;
+
+	if (!list->size)
+		return -EINVAL;
+
+	if (!sev->shared_pages_list_count) {
+		return put_user(0, list->pnents);
+	}
+
+	sz = sev->shared_pages_list_count * sizeof(struct shared_region_array_entry);
+	if (sz > list->size)
+		return -E2BIG;
+
+	array = kmalloc(sz, GFP_KERNEL);
+	if (!array)
+		return -ENOMEM;
+
+	mutex_lock(&kvm->lock);
+	list_for_each_entry(pos, &sev->shared_pages_list, list) {
+		array[nents].gfn_start = pos->gfn_start;
+		array[nents++].gfn_end = pos->gfn_end;
+	}
+	mutex_unlock(&kvm->lock);
+
+	ret = -EFAULT;
+	if (copy_to_user(list->buffer, array, sz))
+		goto out;
+	if (put_user(nents, list->pnents))
+		goto out;
+	ret = 0;
+out:
+	kfree(array);
 	return ret;
 }
 
