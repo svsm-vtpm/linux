@@ -1627,6 +1627,16 @@ int svm_page_enc_status_hc(struct kvm *kvm, unsigned long gpa,
 	return ret;
 }
 
+void sev_update_migration_flags(struct kvm *kvm, u64 data)
+{
+	struct kvm_sev_info *sev = &to_kvm_svm(kvm)->sev_info;
+
+	if (!sev_guest(kvm))
+		return;
+
+	sev->live_migration_enabled = !!(data & KVM_SEV_LIVE_MIGRATION_ENABLED);
+}
+
 int svm_get_shared_pages_list(struct kvm *kvm,
 			      struct kvm_shared_pages_list *list)
 {
