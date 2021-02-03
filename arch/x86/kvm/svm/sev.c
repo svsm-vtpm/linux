@@ -1778,6 +1778,9 @@ int svm_get_shared_pages_list(struct kvm *kvm,
 	if (!list->size)
 		return -EINVAL;
 
+	if (!sev->live_migration_enabled)
+		return -EINVAL;
+
 	if (!sev->shared_pages_list_count) {
 		return put_user(0, list->pnents);
 	}
