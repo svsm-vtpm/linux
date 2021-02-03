@@ -888,6 +888,117 @@ e_free:
 	return ret;
 }
 
+static struct kvm_memory_slot *hva_to_memslot(struct kvm *kvm,
+					      unsigned long hva)
+{
+	struct kvm_memslots *slots = kvm_memslots(kvm);
+	struct kvm_memory_slot *memslot;
+
+	kvm_for_each_memslot(memslot, slots) {
+		if (hva >= memslot->userspace_addr &&
+		    hva < memslot->userspace_addr +
+			      (memslot->npages << PAGE_SHIFT))
+			return memslot;
+	}
+
+	return NULL;
+}
+
+static bool hva_to_gfn(struct kvm *kvm, unsigned long hva, gfn_t *gfn)
+{
+	struct kvm_memory_slot *memslot;
+	gpa_t gpa_offset;
+
+	memslot = hva_to_memslot(kvm, hva);
+	if (!memslot)
+		return false;
+
+	gpa_offset = hva - memslot->userspace_addr;
+	*gfn = ((memslot->base_gfn << PAGE_SHIFT) + gpa_offset) >> PAGE_SHIFT;
+
+	return true;
+}
+
+static bool is_unencrypted_region(gfn_t gfn_start, gfn_t gfn_end,
+				  struct list_head *head)
+{
+	struct shared_region *pos;
+
+	list_for_each_entry(pos, head, list)
+		if (gfn_start >= pos->gfn_start &&
+		    gfn_end <= pos->gfn_end)
+			return true;
+
+	return false;
+}
+
+static int handle_unencrypted_region(struct kvm *kvm,
+				     unsigned long vaddr,
+				     unsigned long vaddr_end,
+				     unsigned long dst_vaddr,
+				     unsigned int size,
+				     bool *is_decrypted)
+{
+	struct kvm_sev_info *sev = &to_kvm_svm(kvm)->sev_info;
+	struct page *page = NULL;
+	gfn_t gfn_start, gfn_end;
+	int len, s_off, d_off;
+	int srcu_idx;
+	int ret = 0;
+
+	/* ensure hva_to_gfn translations remain valid */
+	srcu_idx = srcu_read_lock(&kvm->srcu);
+
+	if (!hva_to_gfn(kvm, vaddr, &gfn_start)) {
+		srcu_read_unlock(&kvm->srcu, srcu_idx);
+		return -EINVAL;
+	}
+
+	if (!hva_to_gfn(kvm, vaddr_end, &gfn_end)) {
+		srcu_read_unlock(&kvm->srcu, srcu_idx);
+		return -EINVAL;
+	}
+
+	if (sev->shared_pages_list_count) {
+		if (is_unencrypted_region(gfn_start, gfn_end,
+					  &sev->shared_pages_list)) {
+			page = alloc_page(GFP_KERNEL);
+			if (!page) {
+				srcu_read_unlock(&kvm->srcu, srcu_idx);
+				return -ENOMEM;
+			}
+
+			/*
+			 * Since user buffer may not be page aligned, calculate the
+			 * offset within the page.
+			*/
+			s_off = vaddr & ~PAGE_MASK;
+			d_off = dst_vaddr & ~PAGE_MASK;
+			len = min_t(size_t, (PAGE_SIZE - s_off), size);
+
+			if (copy_from_user(page_address(page),
+					   (void __user *)(uintptr_t)vaddr, len)) {
+				__free_page(page);
+				srcu_read_unlock(&kvm->srcu, srcu_idx);
+				return -EFAULT;
+			}
+
+			if (copy_to_user((void __user *)(uintptr_t)dst_vaddr,
+					 page_address(page), len)) {
+				ret = -EFAULT;
+			}
+
+			__free_page(page);
+			srcu_read_unlock(&kvm->srcu, srcu_idx);
+			*is_decrypted = true;
+			return ret;
+		}
+	}
+	srcu_read_unlock(&kvm->srcu, srcu_idx);
+	*is_decrypted = false;
+	return ret;
+}
+
 static int sev_dbg_crypt(struct kvm *kvm, struct kvm_sev_cmd *argp, bool dec)
 {
 	unsigned long vaddr, vaddr_end, next_vaddr;
@@ -916,6 +1027,20 @@ static int sev_dbg_crypt(struct kvm *kvm, struct kvm_sev_cmd *argp, bool dec)
 
 	for (; vaddr < vaddr_end; vaddr = next_vaddr) {
 		int len, s_off, d_off;
+
+		if (dec) {
+			bool is_already_decrypted;
+
+			ret = handle_unencrypted_region(kvm,
+							vaddr,
+							vaddr_end,
+							dst_vaddr,
+							size,
+							&is_already_decrypted);
+
+			if (ret || is_already_decrypted)
+				goto already_decrypted;
+		}
 
 		/* lock userspace source and destination page */
 		src_p = sev_pin_memory(kvm, vaddr & PAGE_MASK, PAGE_SIZE, &n, 0);
@@ -961,6 +1086,7 @@ static int sev_dbg_crypt(struct kvm *kvm, struct kvm_sev_cmd *argp, bool dec)
 		sev_unpin_memory(kvm, src_p, n);
 		sev_unpin_memory(kvm, dst_p, n);
 
+already_decrypted:
 		if (ret)
 			goto err;
 
