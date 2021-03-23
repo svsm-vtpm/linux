@@ -68,6 +68,8 @@ struct __packed snp_page_state_change {
 #define RMP_X86_PG_LEVEL(level)	(((level) == RMP_PG_SIZE_4K) ? PG_LEVEL_4K : PG_LEVEL_2M)
 
 #ifdef CONFIG_AMD_MEM_ENCRYPT
+#include <linux/jump_label.h>
+
 static inline int __pvalidate(unsigned long vaddr, int rmp_psize, int validate,
 			      unsigned long *rflags)
 {
@@ -93,6 +95,13 @@ void __init early_snp_set_memory_shared(unsigned long vaddr, unsigned long paddr
 int snp_set_memory_shared(unsigned long vaddr, unsigned int npages);
 int snp_set_memory_private(unsigned long vaddr, unsigned int npages);
 
+extern struct static_key_false snp_enable_key;
+static inline bool snp_key_active(void)
+{
+	return static_branch_unlikely(&snp_enable_key);
+}
+
+
 #else	/* !CONFIG_AMD_MEM_ENCRYPT */
 
 static inline int __pvalidate(unsigned long vaddr, int psize, int validate, unsigned long *eflags)
@@ -114,6 +123,7 @@ early_snp_set_memory_shared(unsigned long vaddr, unsigned long paddr, unsigned i
 }
 static inline int snp_set_memory_shared(unsigned long vaddr, unsigned int npages) { return 0; }
 static inline int snp_set_memory_private(unsigned long vaddr, unsigned int npages) { return 0; }
+static inline bool snp_key_active(void) { return false; }
 
 #endif /* CONFIG_AMD_MEM_ENCRYPT */
 
