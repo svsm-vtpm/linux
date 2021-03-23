@@ -674,6 +674,12 @@ int rmptable_rmpupdate(struct page *page, struct rmpupdate *val)
 	if (!static_branch_unlikely(&snp_enable_key))
 		return -ENXIO;
 
+	ret = set_memory_4k((unsigned long)page_to_virt(page), 1);
+	if (ret) {
+		pr_err("SEV-SNP: failed to split physical address 0x%lx (%d)\n", spa, ret);
+		return ret;
+	}
+
 	/* Retry if another processor is modifying the RMP entry. */
 	do {
 		asm volatile(".byte 0xF2, 0x0F, 0x01, 0xFE"
