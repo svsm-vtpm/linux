@@ -189,7 +189,10 @@ static int sev_guest_init(struct kvm *kvm, struct kvm_sev_cmd *argp)
 	if (asid < 0)
 		return ret;
 
-	ret = sev_platform_init(&argp->error);
+	if (sev->snp_active)
+		ret = sev_snp_init(&argp->error);
+	else
+		ret = sev_platform_init(&argp->error);
 	if (ret)
 		goto e_free;
 
@@ -206,12 +209,19 @@ e_free:
 
 static int sev_es_guest_init(struct kvm *kvm, struct kvm_sev_cmd *argp)
 {
+	int ret;
+
 	if (!sev_es)
 		return -ENOTTY;
 
+	/* Must be set so that sev_asid_new() allocates ASID from the ES ASID range. */
 	to_kvm_svm(kvm)->sev_info.es_active = true;
 
-	return sev_guest_init(kvm, argp);
+	ret = sev_guest_init(kvm, argp);
+	if (ret)
+		to_kvm_svm(kvm)->sev_info.es_active = false;
+
+	return ret;
 }
 
 static int sev_bind_asid(struct kvm *kvm, unsigned int handle, int *error)
@@ -1042,6 +1052,23 @@ e_unpin_memory:
 	return ret;
 }
 
+static int sev_snp_guest_init(struct kvm *kvm, struct kvm_sev_cmd *argp)
+{
+	struct kvm_sev_info *sev = &to_kvm_svm(kvm)->sev_info;
+	int rc;
+
+	if (!sev_snp)
+		return -ENOTTY;
+
+	rc = sev_es_guest_init(kvm, argp);
+	if (rc)
+		return rc;
+
+	sev->snp_active = true;
+
+	return 0;
+}
+
 int svm_mem_enc_op(struct kvm *kvm, void __user *argp)
 {
 	struct kvm_sev_cmd sev_cmd;
@@ -1091,6 +1118,9 @@ int svm_mem_enc_op(struct kvm *kvm, void __user *argp)
 		break;
 	case KVM_SEV_LAUNCH_SECRET:
 		r = sev_launch_secret(kvm, &sev_cmd);
+		break;
+	case KVM_SEV_SNP_INIT:
+		r = sev_snp_guest_init(kvm, &sev_cmd);
 		break;
 	default:
 		r = -EINVAL;
@@ -1953,6 +1983,13 @@ int sev_es_string_io(struct vcpu_svm *svm, int size, unsigned int port, int in)
 
 	return kvm_sev_es_string_io(&svm->vcpu, size, port,
 				    svm->ghcb_sa, svm->ghcb_sa_len, in);
+}
+
+void sev_snp_init_vmcb(struct vcpu_svm *svm)
+{
+	struct vmcb_save_area *save = &svm->vmcb->save;
+
+	save->sev_features |= SVM_SEV_FEATURES_SNP_ACTIVE;
 }
 
 void sev_es_init_vmcb(struct vcpu_svm *svm)

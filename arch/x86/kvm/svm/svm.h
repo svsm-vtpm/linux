@@ -604,6 +604,7 @@ void sev_es_vcpu_load(struct vcpu_svm *svm, int cpu);
 void sev_es_vcpu_put(struct vcpu_svm *svm);
 void sev_vcpu_deliver_sipi_vector(struct kvm_vcpu *vcpu, u8 vector);
 struct page *snp_safe_alloc_page(struct kvm_vcpu *vcpu);
+void sev_snp_init_vmcb(struct vcpu_svm *svm);
 
 /* vmenter.S */
 
