@@ -644,3 +644,44 @@ rmpentry_t *lookup_page_in_rmptable(struct page *page, int *level)
 	return entry;
 }
 EXPORT_SYMBOL_GPL(lookup_page_in_rmptable);
+
+int rmptable_psmash(struct page *page)
+{
+	unsigned long spa = page_to_pfn(page) << PAGE_SHIFT;
+	int ret;
+
+	if (!static_branch_unlikely(&snp_enable_key))
+		return -ENXIO;
+
+	/* Retry if another processor is modifying the RMP entry. */
+	do {
+		asm volatile(".byte 0xF3, 0x0F, 0x01, 0xFF"
+			      : "=a"(ret)
+			      : "a"(spa)
+			      : "memory", "cc");
+	} while (ret == PSMASH_FAIL_INUSE);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(rmptable_psmash);
+
+int rmptable_rmpupdate(struct page *page, struct rmpupdate *val)
+{
+	unsigned long spa = page_to_pfn(page) << PAGE_SHIFT;
+	bool flush = true;
+	int ret;
+
+	if (!static_branch_unlikely(&snp_enable_key))
+		return -ENXIO;
+
+	/* Retry if another processor is modifying the RMP entry. */
+	do {
+		asm volatile(".byte 0xF2, 0x0F, 0x01, 0xFE"
+			     : "=a"(ret)
+			     : "a"(spa), "c"((unsigned long)val), "d"(flush)
+			     : "memory", "cc");
+	} while (ret == PSMASH_FAIL_INUSE);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(rmptable_rmpupdate);

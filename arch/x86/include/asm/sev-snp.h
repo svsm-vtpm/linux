@@ -96,6 +96,29 @@ typedef struct rmpentry rmpentry_t;
 #define rmpentry_gpa(x)		((unsigned long)(x)->info.gpa)
 #define rmpentry_immutable(x)	((x)->info.immutable)
 
+
+/* Return code of RMPUPDATE */
+#define RMPUPDATE_SUCCESS		0
+#define RMPUPDATE_FAIL_INPUT		1
+#define RMPUPDATE_FAIL_PERMISSION	2
+#define RMPUPDATE_FAIL_INUSE		3
+#define RMPUPDATE_FAIL_OVERLAP		4
+
+struct rmpupdate {
+	u64 gpa;
+	u8 assigned;
+	u8 pagesize;
+	u8 immutable;
+	u8 rsvd;
+	u32 asid;
+} __packed;
+
+/* Return code of PSMASH */
+#define PSMASH_FAIL_INPUT		1
+#define PSMASH_FAIL_PERMISSION		2
+#define PSMASH_FAIL_INUSE		3
+#define PSMASH_FAIL_BADADDR		4
+
 #ifdef CONFIG_AMD_MEM_ENCRYPT
 #include <linux/jump_label.h>
 
@@ -124,6 +147,8 @@ void __init early_snp_set_memory_shared(unsigned long vaddr, unsigned long paddr
 int snp_set_memory_shared(unsigned long vaddr, unsigned int npages);
 int snp_set_memory_private(unsigned long vaddr, unsigned int npages);
 rmpentry_t *lookup_page_in_rmptable(struct page *page, int *level);
+int rmptable_psmash(struct page *page);
+int rmptable_rmpupdate(struct page *page, struct rmpupdate *e);
 
 extern struct static_key_false snp_enable_key;
 static inline bool snp_key_active(void)
@@ -155,6 +180,8 @@ static inline int snp_set_memory_shared(unsigned long vaddr, unsigned int npages
 static inline int snp_set_memory_private(unsigned long vaddr, unsigned int npages) { return 0; }
 static inline bool snp_key_active(void) { return false; }
 static inline rpmentry_t *lookup_page_in_rmptable(struct page *page, int *level) { return NULL; }
+static inline int rmptable_psmash(struct page *page) { return -ENXIO; }
+static inline int rmptable_rmpupdate(struct page *page, struct rmpupdate *e) { return -ENXIO; }
 
 #endif /* CONFIG_AMD_MEM_ENCRYPT */
 
