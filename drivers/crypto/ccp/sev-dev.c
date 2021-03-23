@@ -1110,12 +1110,23 @@ e_err:
 	return ret;
 }
 
+static void sev_firmware_shutdown(void)
+{
+	if (boot_cpu_has(X86_FEATURE_SEV))
+		sev_platform_shutdown(NULL);
+
+	if (boot_cpu_has(X86_FEATURE_SEV_SNP))
+		sev_snp_shutdown(NULL);
+}
+
 void sev_dev_destroy(struct psp_device *psp)
 {
 	struct sev_device *sev = psp->sev_data;
 
 	if (!sev)
 		return;
+
+	sev_firmware_shutdown();
 
 	if (sev->misc)
 		kref_put(&misc_dev->refcount, sev_exit);
@@ -1272,12 +1283,7 @@ void sev_pci_exit(void)
 	if (!psp_master->sev_data)
 		return;
 
-	if (boot_cpu_has(X86_FEATURE_SEV))
-		sev_platform_shutdown(NULL);
-
-	if (boot_cpu_has(X86_FEATURE_SEV_SNP))
-		sev_snp_shutdown(NULL);
-
+	sev_firmware_shutdown();
 
 	if (sev_es_tmr) {
 		/* The TMR area was encrypted, flush it from the cache */
