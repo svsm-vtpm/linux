@@ -34,6 +34,8 @@
 
 #include "mm_internal.h"
 
+#define rmptable_page_offset(x)	(0x4000 + (((unsigned long) x) >> 8))
+
 /*
  * Since SME related variables are set early in the boot process they must
  * reside in the .data section so as not to be zeroed out when the .bss
@@ -612,3 +614,33 @@ static int __init mem_encrypt_snp_init(void)
  * SEV-SNP must be enabled across all CPUs, so make the initialization as a late initcall.
  */
 late_initcall(mem_encrypt_snp_init);
+
+rmpentry_t *lookup_page_in_rmptable(struct page *page, int *level)
+{
+	unsigned long phys = page_to_pfn(page) << PAGE_SHIFT;
+	rmpentry_t *entry, *large_entry;
+	unsigned long vaddr;
+
+	if (!static_branch_unlikely(&snp_enable_key))
+		return NULL;
+
+	vaddr = rmptable_start + rmptable_page_offset(phys);
+	if (WARN_ON(vaddr > rmptable_end))
+		return NULL;
+
+	entry = (rmpentry_t *)vaddr;
+
+	/*
+	 * Check if this page is covered by the large RMP entry. This is needed to get
+	 * the page level used in the RMP entry.
+	 *
+	 * e.g. if the page is covered by the large RMP entry then page size is set in the
+	 *       base RMP entry.
+	 */
+	vaddr = rmptable_start + rmptable_page_offset(phys & PMD_MASK);
+	large_entry = (rmpentry_t *)vaddr;
+	*level = rmpentry_pagesize(large_entry);
+
+	return entry;
+}
+EXPORT_SYMBOL_GPL(lookup_page_in_rmptable);
