@@ -19,6 +19,7 @@
 #include <asm/fpu/internal.h>
 
 #include <asm/trapnr.h>
+#include <asm/sev-snp.h>
 
 #include "x86.h"
 #include "svm.h"
@@ -1249,6 +1250,7 @@ void sev_vm_destroy(struct kvm *kvm)
 void __init sev_hardware_setup(void)
 {
 	unsigned int eax, ebx, ecx, edx;
+	bool sev_snp_supported = false;
 	bool sev_es_supported = false;
 	bool sev_supported = false;
 
@@ -1298,9 +1300,24 @@ void __init sev_hardware_setup(void)
 	pr_info("SEV-ES supported: %u ASIDs\n", min_sev_asid - 1);
 	sev_es_supported = true;
 
+	/* SEV-SNP support requested? */
+	if (!sev_snp)
+		goto out;
+
+	/* Does the CPU support SEV-SNP? */
+	if (!boot_cpu_has(X86_FEATURE_SEV_SNP))
+		goto out;
+
+	if (!snp_key_active())
+		goto out;
+
+	pr_info("SEV-SNP supported: %u ASIDs\n", min_sev_asid - 1);
+	sev_snp_supported = true;
+
 out:
 	sev = sev_supported;
 	sev_es = sev_es_supported;
+	sev_snp = sev_snp_supported;
 }
 
 void sev_hardware_teardown(void)
