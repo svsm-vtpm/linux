@@ -268,6 +268,8 @@ struct kvm_xen_exit {
 #define KVM_EXIT_AP_RESET_HOLD    32
 #define KVM_EXIT_X86_BUS_LOCK     33
 #define KVM_EXIT_XEN              34
+#define KVM_EXIT_DMA_SHARE        35
+#define KVM_EXIT_DMA_UNSHARE      36
 
 /* For KVM_EXIT_INTERNAL_ERROR */
 /* Emulate instruction failed. */
@@ -446,6 +448,12 @@ struct kvm_run {
 		} msr;
 		/* KVM_EXIT_XEN */
 		struct kvm_xen_exit xen;
+		/* KVM_EXIT_DMA_SHARE / KVM_EXIT_DMA_UNSHARE */
+		struct {
+			__u64 addr;
+			__u64 len;
+			__u64 ret;
+		} dma_sharing;
 		/* Fix the size of the union. */
 		char padding[256];
 	};

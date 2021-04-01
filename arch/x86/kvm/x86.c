@@ -8273,6 +8273,18 @@ int kvm_emulate_hypercall(struct kvm_vcpu *vcpu)
 		kvm_sched_yield(vcpu->kvm, a0);
 		ret = 0;
 		break;
+	case KVM_HC_PAGE_ENC_STATUS: {
+		int r;
+
+		ret = -KVM_ENOSYS;
+		if (kvm_x86_ops.page_enc_status_hc) {
+			r = kvm_x86_ops.page_enc_status_hc(vcpu, a0, a1, a2);
+			if (r >= 0)
+				return r;
+			ret = r;
+		}
+		break;
+	}
 	default:
 		ret = -KVM_ENOSYS;
 		break;

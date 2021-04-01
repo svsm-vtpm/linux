@@ -5477,6 +5477,24 @@ Valid values for 'type' are:
 
 ::
 
+		/* KVM_EXIT_DMA_SHARE / KVM_EXIT_DMA_UNSHARE */
+		struct {
+			__u64 addr;
+			__u64 len;
+			__u64 ret;
+		} dma_sharing;
+
+This defines a common interface from the guest back to the KVM to support
+use case for a guest to share memory with a host.
+
+The addr and len fields define the starting address and length of the
+shared memory region.
+
+Userspace is expected to place the hypercall result into the "ret" field
+before invoking KVM_RUN again.
+
+::
+
 		/* Fix the size of the union. */
 		char padding[256];
 	};

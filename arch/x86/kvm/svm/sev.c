@@ -1544,6 +1544,67 @@ static int sev_receive_finish(struct kvm *kvm, struct kvm_sev_cmd *argp)
 	return ret;
 }
 
+static int sev_complete_userspace_page_enc_status_hc(struct kvm_vcpu *vcpu)
+{
+	vcpu->run->exit_reason = 0;
+	kvm_rax_write(vcpu, vcpu->run->dma_sharing.ret);
+	++vcpu->stat.hypercalls;
+	return kvm_skip_emulated_instruction(vcpu);
+}
+
+int svm_page_enc_status_hc(struct kvm_vcpu *vcpu, unsigned long gpa,
+			   unsigned long npages, unsigned long enc)
+{
+	kvm_pfn_t pfn_start, pfn_end;
+	struct kvm *kvm = vcpu->kvm;
+	gfn_t gfn_start, gfn_end;
+
+	if (!sev_guest(kvm))
+		return -EINVAL;
+
+	if (!npages)
+		return 0;
+
+	gfn_start = gpa_to_gfn(gpa);
+	gfn_end = gfn_start + npages;
+
+	/* out of bound access error check */
+	if (gfn_end <= gfn_start)
+		return -EINVAL;
+
+	/* lets make sure that gpa exist in our memslot */
+	pfn_start = gfn_to_pfn(kvm, gfn_start);
+	pfn_end = gfn_to_pfn(kvm, gfn_end);
+
+	if (is_error_noslot_pfn(pfn_start) && !is_noslot_pfn(pfn_start)) {
+		/*
+		 * Allow guest MMIO range(s) to be added
+		 * to the shared pages list.
+		 */
+		return -EINVAL;
+	}
+
+	if (is_error_noslot_pfn(pfn_end) && !is_noslot_pfn(pfn_end)) {
+		/*
+		 * Allow guest MMIO range(s) to be added
+		 * to the shared pages list.
+		 */
+		return -EINVAL;
+	}
+
+	if (enc)
+		vcpu->run->exit_reason = KVM_EXIT_DMA_UNSHARE;
+	else
+		vcpu->run->exit_reason = KVM_EXIT_DMA_SHARE;
+
+	vcpu->run->dma_sharing.addr = gfn_start;
+	vcpu->run->dma_sharing.len = npages * PAGE_SIZE;
+	vcpu->arch.complete_userspace_io =
+		sev_complete_userspace_page_enc_status_hc;
+
+	return 0;
+}
+
 int svm_mem_enc_op(struct kvm *kvm, void __user *argp)
 {
 	struct kvm_sev_cmd sev_cmd;
