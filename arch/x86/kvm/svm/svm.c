@@ -2800,6 +2800,17 @@ static int svm_get_msr(struct kvm_vcpu *vcpu, struct msr_data *msr_info)
 	case MSR_F10H_DECFG:
 		msr_info->data = svm->msr_decfg;
 		break;
+	case MSR_KVM_SEV_LIVE_MIGRATION:
+		if (!sev_guest(vcpu->kvm))
+			return 1;
+
+		if (!guest_cpuid_has(vcpu, KVM_FEATURE_SEV_LIVE_MIGRATION))
+			return 1;
+
+		/*
+		 * Let userspace handle the MSR using MSR filters.
+		 */
+		return KVM_MSR_RET_FILTERED;
 	default:
 		return kvm_get_msr_common(vcpu, msr_info);
 	}
@@ -2996,6 +3007,17 @@ static int svm_set_msr(struct kvm_vcpu *vcpu, struct msr_data *msr)
 		svm->msr_decfg = data;
 		break;
 	}
+	case MSR_KVM_SEV_LIVE_MIGRATION:
+		if (!sev_guest(vcpu->kvm))
+			return 1;
+
+		if (!guest_cpuid_has(vcpu, KVM_FEATURE_SEV_LIVE_MIGRATION))
+			return 1;
+
+		/*
+		 * Let userspace handle the MSR using MSR filters.
+		 */
+		return KVM_MSR_RET_FILTERED;
 	case MSR_IA32_APICBASE:
 		if (kvm_vcpu_apicv_active(vcpu))
 			avic_update_vapic_bar(to_svm(vcpu), data);
