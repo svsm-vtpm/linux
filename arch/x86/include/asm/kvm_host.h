@@ -1050,6 +1050,8 @@ struct kvm_arch {
 
 	bool bus_lock_detection_enabled;
 
+	bool page_enc_hc_enable;
+
 	/* Deflect RDMSR and WRMSR to user space when they trigger a #GP */
 	u32 user_space_msr_mask;
 	struct kvm_x86_msr_filter __rcu *msr_filter;
