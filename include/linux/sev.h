@@ -42,13 +42,40 @@ struct __packed rmpentry {
 #define X86_TO_RMP_PG_LEVEL(level)	(((level) == PG_LEVEL_4K) ? RMP_PG_SIZE_4K : RMP_PG_SIZE_2M)
 #define RMP_TO_X86_PG_LEVEL(level)	(((level) == RMP_PG_SIZE_4K) ? PG_LEVEL_4K : PG_LEVEL_2M)
 
+/* Return code of RMPUPDATE */
+#define RMPUPDATE_SUCCESS		0
+#define RMPUPDATE_FAIL_INPUT		1
+#define RMPUPDATE_FAIL_PERMISSION	2
+#define RMPUPDATE_FAIL_INUSE		3
+#define RMPUPDATE_FAIL_OVERLAP		4
+
+struct rmpupdate {
+	u64 gpa;
+	u8 assigned;
+	u8 pagesize;
+	u8 immutable;
+	u8 rsvd;
+	u32 asid;
+} __packed;
+
+/* Return code of PSMASH */
+#define PSMASH_SUCCESS			0
+#define PSMASH_FAIL_INPUT		1
+#define PSMASH_FAIL_PERMISSION		2
+#define PSMASH_FAIL_INUSE		3
+#define PSMASH_FAIL_BADADDR		4
+
 #ifdef CONFIG_AMD_MEM_ENCRYPT
 struct rmpentry *snp_lookup_page_in_rmptable(struct page *page, int *level);
+int psmash(struct page *page);
+int rmpupdate(struct page *page, struct rmpupdate *e);
 #else
 static inline struct rmpentry *snp_lookup_page_in_rmptable(struct page *page, int *level)
 {
 	return NULL;
 }
+static inline int psmash(struct page *page) { return -ENXIO; }
+static inline int rmpupdate(struct page *page, struct rmpupdate *e) { return -ENXIO; }
 
 #endif /* CONFIG_AMD_MEM_ENCRYPT */
 #endif /* __LINUX_SEV_H */
