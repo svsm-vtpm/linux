@@ -19,6 +19,7 @@
 #include <linux/uaccess.h>		/* faulthandler_disabled()	*/
 #include <linux/efi.h>			/* efi_crash_gracefully_on_page_fault()*/
 #include <linux/mm_types.h>
+#include <linux/sev.h>			/* snp_lookup_page_in_rmptable() */
 
 #include <asm/cpufeature.h>		/* boot_cpu_has, ...		*/
 #include <asm/traps.h>			/* dotraplinkage, ...		*/
@@ -1132,6 +1133,145 @@ bool fault_in_kernel_space(unsigned long address)
 	return address >= TASK_SIZE_MAX;
 }
 
+#define RMP_FAULT_RETRY		0
+#define RMP_FAULT_KILL		1
+#define RMP_FAULT_PAGE_SPLIT	2
+
+static inline size_t pages_per_hpage(int level)
+{
+	return page_level_size(level) / PAGE_SIZE;
+}
+
+static void dump_rmpentry(unsigned long pfn)
+{
+	struct rmpentry *e;
+	int level;
+
+	e = snp_lookup_page_in_rmptable(pfn_to_page(pfn), &level);
+
+	/*
+	 * If the RMP entry at the faulting address was not assigned, then dump may not
+	 * provide any useful debug information. Iterate through the entire 2MB region,
+	 * and dump the RMP entries if one of the bit in the RMP entry is set.
+	 */
+	if (rmpentry_assigned(e)) {
+		pr_alert("RMPEntry paddr 0x%lx [assigned=%d immutable=%d pagesize=%d gpa=0x%lx"
+			" asid=%d vmsa=%d validated=%d]\n", pfn << PAGE_SHIFT,
+			rmpentry_assigned(e), rmpentry_immutable(e), rmpentry_pagesize(e),
+			rmpentry_gpa(e), rmpentry_asid(e), rmpentry_vmsa(e),
+			rmpentry_validated(e));
+
+		pr_alert("RMPEntry paddr 0x%lx %016llx %016llx\n", pfn << PAGE_SHIFT,
+			e->high, e->low);
+	} else {
+		unsigned long pfn_end;
+
+		pfn = pfn & ~0x1ff;
+		pfn_end = pfn + PTRS_PER_PMD;
+
+		while (pfn < pfn_end) {
+			e = snp_lookup_page_in_rmptable(pfn_to_page(pfn), &level);
+
+			if (unlikely(!e))
+				return;
+
+			if (e->low || e->high)
+				pr_alert("RMPEntry paddr 0x%lx: %016llx %016llx\n",
+					pfn << PAGE_SHIFT, e->high, e->low);
+			pfn++;
+		}
+	}
+}
+
+/*
+ * Called for all faults where 'address' is part of the kernel address space.
+ * The function returns RMP_FAULT_RETRY when its able to resolve the fault and
+ * its safe to retry.
+ */
+static int handle_kern_rmp_fault(unsigned long hw_error_code, unsigned long address)
+{
+	int ret, level, rmp_level, mask;
+	struct rmpupdate val = {};
+	struct rmpentry *e;
+	unsigned long pfn;
+	pgd_t *pgd;
+	pte_t *pte;
+
+	if (unlikely(!cpu_feature_enabled(X86_FEATURE_SEV_SNP)))
+		return RMP_FAULT_KILL;
+
+	pgd = __va(read_cr3_pa());
+	pgd += pgd_index(address);
+
+	pte = lookup_address_in_pgd(pgd, address, &level);
+
+	if (unlikely(!pte))
+		return RMP_FAULT_KILL;
+
+	switch(level) {
+	case PG_LEVEL_4K: pfn = pte_pfn(*pte); break;
+	case PG_LEVEL_2M: pfn = pmd_pfn(*(pmd_t *)pte); break;
+	case PG_LEVEL_1G: pfn = pud_pfn(*(pud_t *)pte); break;
+	case PG_LEVEL_512G: pfn = p4d_pfn(*(p4d_t *)pte); break;
+	default: return RMP_FAULT_KILL;
+	}
+
+	/* Calculate the PFN within large page. */
+	if (level > PG_LEVEL_4K) {
+		mask = pages_per_hpage(level) - pages_per_hpage(level - 1);
+		pfn |= (address >> PAGE_SHIFT) & mask;
+	}
+
+	e = snp_lookup_page_in_rmptable(pfn_to_page(pfn), &rmp_level);
+	if (unlikely(!e))
+		return RMP_FAULT_KILL;
+
+	/*
+	 * If the immutable bit is set, we cannot convert the page to shared
+	 * to resolve the fault.
+	 */
+	if (rmpentry_immutable(e))
+		goto e_dump_rmpentry;
+
+	/*
+	 * If the host page level is greather than RMP page level then only way to
+	 * resolve the fault is to split the address. We don't support splitting
+	 * kernel address in the fault path yet.
+	 */
+	if (level > rmp_level)
+		goto e_dump_rmpentry;
+
+	/*
+	 * If the RMP page level is higher than host page level then use the PSMASH
+	 * to split the RMP large entry into 512 4K entries.
+	 */
+	if (rmp_level > level) {
+		ret = psmash(pfn_to_page(pfn & ~0x1FF));
+		if (ret) {
+			pr_alert("Failed to psmash pfn 0x%lx (rc %d)\n", pfn, ret);
+			goto e_dump_rmpentry;
+		}
+	}
+
+	/* Log that the RMP fault handler is clearing the assigned bit. */
+	if (rmpentry_assigned(e))
+		pr_alert("Force address %lx from assigned -> unassigned in RMP table\n", address);
+
+	/* Clear the assigned bit from the RMP table. */
+	ret = rmpupdate(pfn_to_page(pfn), &val);
+	if (ret) {
+		pr_alert("Failed to unassign address 0x%lx in RMP table\n", address);
+		goto e_dump_rmpentry;
+	}
+
+	return RMP_FAULT_RETRY;
+
+e_dump_rmpentry:
+
+	dump_rmpentry(pfn);
+	return RMP_FAULT_KILL;
+}
+
 /*
  * Called for all faults where 'address' is part of the kernel address
  * space.  Might get called for faults that originate from *code* that
@@ -1178,6 +1318,12 @@ do_kern_addr_fault(struct pt_regs *regs, unsigned long hw_error_code,
 			return;
 	}
 #endif
+
+	/* Try resolving the RMP fault. */
+	if (hw_error_code & X86_PF_RMP) {
+		if (handle_kern_rmp_fault(hw_error_code, address) == RMP_FAULT_RETRY)
+			return;
+	}
 
 	if (is_f00f_bug(regs, hw_error_code, address))
 		return;
