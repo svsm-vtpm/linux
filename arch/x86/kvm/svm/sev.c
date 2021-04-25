@@ -2174,6 +2174,7 @@ static int sev_es_validate_vmgexit(struct vcpu_svm *svm)
 	case SVM_VMGEXIT_AP_HLT_LOOP:
 	case SVM_VMGEXIT_AP_JUMP_TABLE:
 	case SVM_VMGEXIT_UNSUPPORTED_EVENT:
+	case SVM_VMGEXIT_HYPERVISOR_FEATURES:
 		break;
 	default:
 		goto vmgexit_err;
@@ -2431,6 +2432,13 @@ static int sev_handle_vmgexit_msr_protocol(struct vcpu_svm *svm)
 				  GHCB_MSR_INFO_MASK,
 				  GHCB_MSR_INFO_POS);
 		break;
+	case GHCB_MSR_HV_FEATURES_REQ: {
+		set_ghcb_msr_bits(svm, GHCB_HV_FEATURES_SUPPORTED,
+				GHCB_MSR_HV_FEATURES_MASK, GHCB_MSR_HV_FEATURES_POS);
+		set_ghcb_msr_bits(svm, GHCB_MSR_HV_FEATURES_RESP,
+				GHCB_MSR_INFO_MASK, GHCB_MSR_INFO_POS);
+		break;
+	}
 	case GHCB_MSR_TERM_REQ: {
 		u64 reason_set, reason_code;
 
@@ -2542,6 +2550,12 @@ int sev_handle_vmgexit(struct kvm_vcpu *vcpu)
 						SVM_EVTINJ_TYPE_EXEPT |
 						SVM_EVTINJ_VALID);
 		}
+
+		ret = 1;
+		break;
+	}
+	case SVM_VMGEXIT_HYPERVISOR_FEATURES: {
+		ghcb_set_sw_exit_info_2(ghcb, GHCB_HV_FEATURES_SUPPORTED);
 
 		ret = 1;
 		break;
