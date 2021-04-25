@@ -2641,6 +2641,7 @@ static int sev_es_validate_vmgexit(struct vcpu_svm *svm)
 	case SVM_VMGEXIT_AP_JUMP_TABLE:
 	case SVM_VMGEXIT_UNSUPPORTED_EVENT:
 	case SVM_VMGEXIT_HYPERVISOR_FEATURES:
+	case SVM_VMGEXIT_SNP_PAGE_STATE_CHANGE:
 		break;
 	default:
 		goto vmgexit_err;
@@ -2927,6 +2928,7 @@ static int __snp_handle_page_state_change(struct kvm_vcpu *vcpu, int op, gpa_t g
 		case SNP_PAGE_STATE_PRIVATE:
 			rc = snp_make_page_private(vcpu, gpa, pfn, level);
 			break;
+		/* TODO: Add USMASH and PSMASH support */
 		default:
 			rc = -EINVAL;
 			break;
@@ -2941,6 +2943,53 @@ static int __snp_handle_page_state_change(struct kvm_vcpu *vcpu, int op, gpa_t g
 		}
 
 		gpa = gpa + page_level_size(level);
+	}
+
+out:
+	return rc;
+}
+
+static unsigned long snp_handle_page_state_change(struct vcpu_svm *svm, struct ghcb *ghcb)
+{
+	struct snp_page_state_entry *entry;
+	struct kvm_vcpu *vcpu = &svm->vcpu;
+	struct snp_page_state_change *info;
+	unsigned long rc;
+	int level, op;
+	gpa_t gpa;
+
+	if (!sev_snp_guest(vcpu->kvm))
+		return -ENXIO;
+
+	if (!setup_vmgexit_scratch(svm, true, sizeof(ghcb->save.sw_scratch))) {
+		pr_err("vmgexit: scratch area is not setup.\n");
+		return -EINVAL;
+	}
+
+	info = (struct snp_page_state_change *)svm->ghcb_sa;
+	entry = &info->entry[info->header.cur_entry];
+
+	if ((info->header.cur_entry >= VMGEXIT_PSC_MAX_ENTRY) ||
+	    (info->header.end_entry >= VMGEXIT_PSC_MAX_ENTRY) ||
+	    (info->header.cur_entry > info->header.end_entry))
+		return VMGEXIT_PSC_INVALID_HEADER;
+
+	while (info->header.cur_entry <= info->header.end_entry) {
+		entry = &info->entry[info->header.cur_entry];
+		gpa = gfn_to_gpa(entry->gfn);
+		level = RMP_TO_X86_PG_LEVEL(entry->pagesize);
+		op = entry->operation;
+
+		if (!IS_ALIGNED(gpa, page_level_size(level))) {
+			rc = VMGEXIT_PSC_INVALID_ENTRY;
+			goto out;
+		}
+
+		rc = __snp_handle_page_state_change(vcpu, op, gpa, level);
+		if (rc)
+			goto out;
+
+		info->header.cur_entry++;
 	}
 
 out:
@@ -3185,6 +3234,15 @@ int sev_handle_vmgexit(struct kvm_vcpu *vcpu)
 		ghcb_set_sw_exit_info_2(ghcb, GHCB_HV_FEATURES_SUPPORTED);
 
 		ret = 1;
+		break;
+	}
+	case SVM_VMGEXIT_SNP_PAGE_STATE_CHANGE: {
+		unsigned long rc;
+
+		ret = 1;
+
+		rc = snp_handle_page_state_change(svm, ghcb);
+		ghcb_set_sw_exit_info_2(ghcb, rc);
 		break;
 	}
 	case SVM_VMGEXIT_UNSUPPORTED_EVENT:
