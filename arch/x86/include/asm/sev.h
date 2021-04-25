@@ -9,6 +9,7 @@
 #define __ASM_ENCRYPTED_STATE_H
 
 #include <linux/types.h>
+#include <linux/sev.h>
 #include <asm/insn.h>
 #include <asm/sev-common.h>
 
@@ -64,10 +65,6 @@ extern bool handle_vc_boot_ghcb(struct pt_regs *regs);
 #define PVALIDATE_FAIL_INPUT		1
 #define PVALIDATE_FAIL_SIZEMISMATCH	6
 #define PVALIDATE_FAIL_NOUPDATE		255 /* Software defined (when rFlags.CF = 1) */
-
-/* RMP page size */
-#define RMP_PG_SIZE_2M			1
-#define RMP_PG_SIZE_4K			0
 
 #ifdef CONFIG_AMD_MEM_ENCRYPT
 extern struct static_key_false sev_es_enable_key;
