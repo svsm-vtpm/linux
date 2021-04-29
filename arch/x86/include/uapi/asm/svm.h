@@ -109,6 +109,8 @@
 #define SVM_VMGEXIT_SET_AP_JUMP_TABLE		0
 #define SVM_VMGEXIT_GET_AP_JUMP_TABLE		1
 #define SVM_VMGEXIT_SNP_PAGE_STATE_CHANGE	0x80000010
+#define SVM_VMGEXIT_SNP_GUEST_REQUEST		0x80000011
+#define SVM_VMGEXIT_SNP_EXT_GUEST_REQUEST	0x80000012
 #define SVM_VMGEXIT_HYPERVISOR_FEATURES		0x8000fffd
 #define SVM_VMGEXIT_UNSUPPORTED_EVENT		0x8000ffff
 
@@ -218,6 +220,8 @@
 	{ SVM_VMGEXIT_AP_HLT_LOOP,	"vmgexit_ap_hlt_loop" }, \
 	{ SVM_VMGEXIT_AP_JUMP_TABLE,	"vmgexit_ap_jump_table" }, \
 	{ SVM_VMGEXIT_SNP_PAGE_STATE_CHANGE,	"vmgexit_page_state_change" }, \
+	{ SVM_VMGEXIT_SNP_GUEST_REQUEST,	"vmgexit_snp_guest_request" }, \
+	{ SVM_VMGEXIT_SNP_EXT_GUEST_REQUEST,	"vmgexit_snp_extended_guest_request" }, \
 	{ SVM_VMGEXIT_HYPERVISOR_FEATURES,	"vmgexit_hypervisor_feature" }, \
 	{ SVM_EXIT_ERR,         "invalid_guest_state" }
 
