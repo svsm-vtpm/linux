@@ -9,6 +9,7 @@
 
 #define pr_fmt(fmt)	"SEV-ES: " fmt
 
+#include <linux/platform_device.h>
 #include <linux/sched/debug.h>	/* For show_regs() */
 #include <linux/percpu-defs.h>
 #include <linux/mem_encrypt.h>
@@ -16,9 +17,12 @@
 #include <linux/printk.h>
 #include <linux/mm_types.h>
 #include <linux/set_memory.h>
+#include <linux/snp-guest.h>
 #include <linux/memblock.h>
 #include <linux/kernel.h>
+#include <linux/efi.h>
 #include <linux/mm.h>
+#include <linux/io.h>
 
 #include <asm/cpu_entry_area.h>
 #include <asm/stacktrace.h>
@@ -31,6 +35,7 @@
 #include <asm/svm.h>
 #include <asm/smp.h>
 #include <asm/cpu.h>
+#include <asm/setup.h>		/* For struct boot_params */
 
 #define DR7_RESET_VALUE        0x400
 
@@ -100,6 +105,21 @@ struct sev_es_runtime_data {
 struct ghcb_state {
 	struct ghcb *ghcb;
 };
+
+/* Confidential computing blob information */
+#define CC_BLOB_SEV_HDR_MAGIC	0x414d4445
+struct cc_blob_sev_info {
+	u32 magic;
+	u16 version;
+	u64 secrets_phys;
+	u32 secrets_len;
+	u64 cpuid_phys;
+	u32 cpuid_len;
+};
+
+#ifdef CONFIG_EFI
+extern unsigned long cc_blob_phys;
+#endif
 
 static DEFINE_PER_CPU(struct sev_es_runtime_data*, runtime_data);
 DEFINE_STATIC_KEY_FALSE(sev_es_enable_key);
@@ -1658,3 +1678,107 @@ fail:
 	while (true)
 		halt();
 }
+
+static struct resource guest_req_res[0];
+static struct platform_device guest_req_device = {
+	.name		= "snp-guest",
+	.id		= -1,
+	.resource	= guest_req_res,
+	.num_resources	= 1,
+};
+
+static int get_snp_secrets_resource(struct resource *res)
+{
+	struct setup_header *hdr = &boot_params.hdr;
+	struct cc_blob_sev_info *info;
+	unsigned long paddr;
+	int ret = -ENODEV;
+
+	/*
+	 * The secret page contains the VM encryption key used for encrypting the
+	 * messages between the guest and the PSP. The secrets page location is
+	 * available either through the setup_data or EFI configuration table.
+	 */
+	if (hdr->cc_blob_address) {
+		paddr = hdr->cc_blob_address;
+	} else if (efi_enabled(EFI_CONFIG_TABLES)) {
+#ifdef CONFIG_EFI
+		paddr = cc_blob_phys;
+#else
+		return -ENODEV;
+#endif
+	} else {
+		return -ENODEV;
+	}
+
+	info = memremap(paddr, sizeof(*info), MEMREMAP_WB);
+	if (!info)
+		return -ENOMEM;
+
+	if (info->magic == CC_BLOB_SEV_HDR_MAGIC && info->secrets_phys && info->secrets_len) {
+		res->start = info->secrets_phys;
+		res->end = info->secrets_phys + info->secrets_len;
+		res->flags = IORESOURCE_MEM;
+		ret = 0;
+	}
+
+	memunmap(info);
+	return ret;
+}
+
+static int __init add_snp_guest_request(void)
+{
+	if (!sev_snp_active())
+		return -ENODEV;
+
+	if (get_snp_secrets_resource(&guest_req_res[0]))
+		return -ENODEV;
+
+	platform_device_register(&guest_req_device);
+	dev_info(&guest_req_device.dev, "registered [secret 0x%016llx - 0x%016llx]\n",
+		guest_req_res[0].start, guest_req_res[0].end);
+
+	return 0;
+}
+device_initcall(add_snp_guest_request);
+
+unsigned long snp_issue_guest_request(int type, struct snp_guest_request_data *input)
+{
+	struct ghcb_state state;
+	struct ghcb *ghcb;
+	unsigned long id;
+	int ret;
+
+	if (type == SNP_GUEST_REQUEST)
+		id = SVM_VMGEXIT_SNP_GUEST_REQUEST;
+	else if (type == SNP_EXTENDED_GUEST_REQUEST)
+		id = SVM_VMGEXIT_SNP_EXT_GUEST_REQUEST;
+	else
+		return -EINVAL;
+
+	if (!sev_snp_active())
+		return -ENODEV;
+
+	ghcb = sev_es_get_ghcb(&state);
+	if (!ghcb)
+		return -ENODEV;
+
+	vc_ghcb_invalidate(ghcb);
+	ghcb_set_rax(ghcb, input->data_gpa);
+	ghcb_set_rbx(ghcb, input->data_npages);
+
+	ret = sev_es_ghcb_hv_call(ghcb, NULL, id, input->req_gpa, input->resp_gpa);
+
+	if (ret)
+		goto e_put;
+
+	if (ghcb->save.sw_exit_info_2) {
+		ret = ghcb->save.sw_exit_info_2;
+		goto e_put;
+	}
+
+e_put:
+	sev_es_put_ghcb(&state);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(snp_issue_guest_request);
