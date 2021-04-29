@@ -498,6 +498,93 @@ static u64 get_jump_table_addr(void)
 	return ret;
 }
 
+static void pvalidate_pages(unsigned long vaddr, unsigned int npages, bool validate)
+{
+	unsigned long vaddr_end;
+	int rc;
+
+	vaddr = vaddr & PAGE_MASK;
+	vaddr_end = vaddr + (npages << PAGE_SHIFT);
+
+	while (vaddr < vaddr_end) {
+		rc = pvalidate(vaddr, RMP_PG_SIZE_4K, validate);
+		if (rc) {
+			WARN(rc, "Failed to validate address 0x%lx ret %d", vaddr, rc);
+			goto e_fail;
+		}
+
+		vaddr = vaddr + PAGE_SIZE;
+	}
+
+	return;
+
+e_fail:
+	sev_es_terminate(1, GHCB_TERM_PVALIDATE);
+}
+
+static void __init early_snp_set_page_state(unsigned long paddr, unsigned int npages, int op)
+{
+	unsigned long paddr_end;
+	u64 val;
+
+	paddr = paddr & PAGE_MASK;
+	paddr_end = paddr + (npages << PAGE_SHIFT);
+
+	while (paddr < paddr_end) {
+		/*
+		 * Use the MSR protcol because this function can be called before the GHCB
+		 * is established.
+		 */
+		sev_es_wr_ghcb_msr(GHCB_MSR_PSC_REQ_GFN(paddr >> PAGE_SHIFT, op));
+		VMGEXIT();
+
+		val = sev_es_rd_ghcb_msr();
+
+		if (GHCB_RESP_CODE(val) != GHCB_MSR_PSC_RESP)
+			goto e_term;
+
+		if (GHCB_MSR_PSC_RESP_VAL(val)) {
+			WARN(1, "Failed to change page state to '%s' paddr 0x%lx error 0x%llx\n",
+				op == SNP_PAGE_STATE_PRIVATE ? "private" : "shared", paddr,
+				GHCB_MSR_PSC_RESP_VAL(val));
+			goto e_term;
+		}
+
+		paddr = paddr + PAGE_SIZE;
+	}
+
+	return;
+
+e_term:
+	sev_es_terminate(1, GHCB_TERM_PSC);
+}
+
+void __init early_snp_set_memory_private(unsigned long vaddr, unsigned long paddr,
+					 unsigned int npages)
+{
+	if (!sev_snp_active())
+		return;
+
+	 /* Ask hypervisor to add the memory pages in RMP table as a 'private'. */
+	early_snp_set_page_state(paddr, npages, SNP_PAGE_STATE_PRIVATE);
+
+	/* Validate the memory pages after its added in the RMP table. */
+	pvalidate_pages(vaddr, npages, 1);
+}
+
+void __init early_snp_set_memory_shared(unsigned long vaddr, unsigned long paddr,
+					unsigned int npages)
+{
+	if (!sev_snp_active())
+		return;
+
+	/* Invalidate memory pages before making it shared in the RMP table. */
+	pvalidate_pages(vaddr, npages, 0);
+
+	 /* Ask hypervisor to make the memory pages shared in the RMP table. */
+	early_snp_set_page_state(paddr, npages, SNP_PAGE_STATE_SHARED);
+}
+
 int sev_es_setup_ap_jump_table(struct real_mode_header *rmh)
 {
 	u16 startup_cs, startup_ip;
