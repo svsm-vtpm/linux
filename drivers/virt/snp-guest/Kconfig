@@ -1,0 +1,10 @@
+config SNP_GUEST
+	tristate "AMD SEV-SNP Guest request driver"
+	default y
+	depends on AMD_MEM_ENCRYPT
+	help
+	  Provides AMD SNP guest request driver. The driver can be used by the
+	  guest to communicate with the hypervisor to request the attestation report
+	  and more.
+
+	  If you choose 'M' here, this module will be called snp-guest.
