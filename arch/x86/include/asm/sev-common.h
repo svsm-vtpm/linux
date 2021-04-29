@@ -128,4 +128,9 @@ struct __packed snp_page_state_change {
 
 #define GHCB_RESP_CODE(v)		((v) & GHCB_MSR_INFO_MASK)
 
+/* Linux specific reason codes (used with reason set 1) */
+#define GHCB_TERM_REGISTER		0	/* GHCB GPA registration failure */
+#define GHCB_TERM_PSC			1	/* Page State Change faiilure */
+#define GHCB_TERM_PVALIDATE		2	/* Pvalidate failure */
+
 #endif
