@@ -207,6 +207,10 @@ static bool early_setup_sev_es(void)
 	/* Initialize lookup tables for the instruction decoder */
 	inat_init_tables();
 
+	/* SEV-SNP guest requires the GHCB GPA must be registered */
+	if (sev_snp_enabled())
+		snp_register_ghcb(__pa(&boot_ghcb_page));
+
 	return true;
 }
 
