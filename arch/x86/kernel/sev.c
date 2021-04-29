@@ -88,6 +88,13 @@ struct sev_es_runtime_data {
 	 * is currently unsupported in SEV-ES guests.
 	 */
 	unsigned long dr7;
+
+	/*
+	 * SEV-SNP requires that the GHCB must be registered before using it.
+	 * The flag below will indicate whether the GHCB is registered, if its
+	 * not registered then sev_es_get_ghcb() will perform the registration.
+	 */
+	bool snp_ghcb_registered;
 };
 
 struct ghcb_state {
@@ -99,6 +106,9 @@ DEFINE_STATIC_KEY_FALSE(sev_es_enable_key);
 
 /* Needed in vc_early_forward_exception */
 void do_early_exception(struct pt_regs *regs, int trapnr);
+
+/* Defined in sev-shared.c */
+static void snp_register_ghcb(unsigned long paddr);
 
 static void __init setup_vc_stacks(int cpu)
 {
@@ -204,6 +214,12 @@ static __always_inline struct ghcb *sev_es_get_ghcb(struct ghcb_state *state)
 	} else {
 		state->ghcb = NULL;
 		data->ghcb_active = true;
+	}
+
+	/* SEV-SNP guest requires that GHCB must be registered before using it. */
+	if (sev_snp_active() && !data->snp_ghcb_registered) {
+		snp_register_ghcb(__pa(ghcb));
+		data->snp_ghcb_registered = true;
 	}
 
 	return ghcb;
@@ -595,6 +611,10 @@ static bool __init sev_es_setup_ghcb(void)
 	/* Alright - Make the boot-ghcb public */
 	boot_ghcb = &boot_ghcb_page;
 
+	/* SEV-SNP guest requires that GHCB GPA must be registered */
+	if (sev_snp_active())
+		snp_register_ghcb(__pa(&boot_ghcb_page));
+
 	return true;
 }
 
@@ -684,6 +704,7 @@ static void __init init_ghcb(int cpu)
 
 	data->ghcb_active = false;
 	data->backup_ghcb_active = false;
+	data->snp_ghcb_registered = false;
 }
 
 void __init sev_es_init_vc_handling(void)
