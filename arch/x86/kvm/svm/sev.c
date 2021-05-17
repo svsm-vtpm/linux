@@ -230,8 +230,9 @@ static void sev_unbind_asid(struct kvm *kvm, unsigned int handle)
 
 static int sev_guest_init(struct kvm *kvm, struct kvm_sev_cmd *argp)
 {
+	bool es_active = (argp->id == KVM_SEV_ES_INIT || argp->id == KVM_SEV_SNP_INIT);
 	struct kvm_sev_info *sev = &to_kvm_svm(kvm)->sev_info;
-	bool es_active = argp->id == KVM_SEV_ES_INIT;
+	bool snp_active = argp->id == KVM_SEV_SNP_INIT;
 	int asid, ret;
 
 	if (kvm->created_vcpus)
@@ -242,12 +243,16 @@ static int sev_guest_init(struct kvm *kvm, struct kvm_sev_cmd *argp)
 		return ret;
 
 	sev->es_active = es_active;
+	sev->snp_active = snp_active;
 	asid = sev_asid_new(sev);
 	if (asid < 0)
 		goto e_no_asid;
 	sev->asid = asid;
 
-	ret = sev_platform_init(&argp->error);
+	if (snp_active)
+		ret = sev_snp_init(&argp->error);
+	else
+		ret = sev_platform_init(&argp->error);
 	if (ret)
 		goto e_free;
 
@@ -590,6 +595,9 @@ static int sev_es_sync_vmsa(struct vcpu_svm *svm)
 	save->xcr0 = svm->vcpu.arch.xcr0;
 	save->pkru = svm->vcpu.arch.pkru;
 	save->xss  = svm->vcpu.arch.ia32_xss;
+
+	if (sev_snp_guest(svm->vcpu.kvm))
+		save->sev_features |= SVM_SEV_FEATURES_SNP_ACTIVE;
 
 	return 0;
 }
@@ -1523,6 +1531,12 @@ int svm_mem_enc_op(struct kvm *kvm, void __user *argp)
 	}
 
 	switch (sev_cmd.id) {
+	case KVM_SEV_SNP_INIT:
+		if (!sev_snp_enabled) {
+			r = -ENOTTY;
+			goto out;
+		}
+		fallthrough;
 	case KVM_SEV_ES_INIT:
 		if (!sev_es_enabled) {
 			r = -ENOTTY;

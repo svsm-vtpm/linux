@@ -1678,6 +1678,9 @@ enum sev_cmd_id {
 	/* Guest Migration Extension */
 	KVM_SEV_SEND_CANCEL,
 
+	/* SNP specific commands */
+	KVM_SEV_SNP_INIT = 255,
+
 	KVM_SEV_NR_MAX,
 };
 
