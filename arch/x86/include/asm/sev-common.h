@@ -93,6 +93,7 @@
 	GHCB_MSR_GPA_REG_REQ)
 
 #define GHCB_MSR_GPA_REG_RESP		0x013
+#define GHCB_MSR_GPA_REG_ERROR		GENMASK_ULL(51, 0)
 #define GHCB_MSR_GPA_REG_RESP_VAL(v)	((v) >> GHCB_MSR_GPA_REG_VALUE_POS)
 
 /* SNP Page State Change NAE event */
