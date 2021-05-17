@@ -24,6 +24,8 @@
 #include <linux/mm.h>
 #include <linux/cpumask.h>
 #include <linux/io.h>
+#include <linux/io.h>
+#include <linux/iommu.h>
 
 #include <asm/cpu_entry_area.h>
 #include <asm/stacktrace.h>
@@ -38,6 +40,7 @@
 #include <asm/cpu.h>
 #include <asm/apic.h>
 #include <asm/setup.h>		/* For struct boot_params */
+#include <asm/iommu.h>
 
 #include "sev-internal.h"
 
@@ -53,6 +56,9 @@ static struct ghcb boot_ghcb_page __bss_decrypted __aligned(PAGE_SIZE);
 static struct ghcb __initdata *boot_ghcb;
 
 static unsigned long snp_secrets_phys;
+
+static unsigned long rmptable_start __ro_after_init;
+static unsigned long rmptable_end __ro_after_init;
 
 /* #VC handler runtime per-CPU data */
 struct sev_es_runtime_data {
@@ -2085,3 +2091,110 @@ e_put:
 	return ret;
 }
 EXPORT_SYMBOL_GPL(snp_issue_guest_request);
+
+#undef pr_fmt
+#define pr_fmt(fmt)	"SEV-SNP: " fmt
+
+static int __snp_enable(unsigned int cpu)
+{
+	u64 val;
+
+	if (!cpu_feature_enabled(X86_FEATURE_SEV_SNP))
+		return 0;
+
+	rdmsrl(MSR_AMD64_SYSCFG, val);
+
+	val |= MSR_AMD64_SYSCFG_SNP_EN;
+	val |= MSR_AMD64_SYSCFG_SNP_VMPL_EN;
+
+	wrmsrl(MSR_AMD64_SYSCFG, val);
+
+	return 0;
+}
+
+static __init void snp_enable(void *arg)
+{
+	__snp_enable(smp_processor_id());
+}
+
+static __init int __snp_rmptable_init(void)
+{
+	u64 rmp_base, rmp_end;
+	unsigned long sz;
+	void *start;
+	u64 val;
+
+	rdmsrl(MSR_AMD64_RMP_BASE, rmp_base);
+	rdmsrl(MSR_AMD64_RMP_END, rmp_end);
+
+	if (!rmp_base || !rmp_end) {
+		pr_info("Memory for the RMP table has not been reserved by BIOS\n");
+		return 1;
+	}
+
+	sz = rmp_end - rmp_base + 1;
+
+	start = memremap(rmp_base, sz, MEMREMAP_WB);
+	if (!start) {
+		pr_err("Failed to map RMP table 0x%llx-0x%llx\n", rmp_base, rmp_end);
+		return 1;
+	}
+
+	/*
+	 * Check if SEV-SNP is already enabled, this can happen if we are coming from
+	 * kexec boot.
+	 */
+	rdmsrl(MSR_AMD64_SYSCFG, val);
+	if (val & MSR_AMD64_SYSCFG_SNP_EN)
+		goto skip_enable;
+
+	/* Initialize the RMP table to zero */
+	memset(start, 0, sz);
+
+	/* Flush the caches to ensure that data is written before SNP is enabled. */
+	wbinvd_on_all_cpus();
+
+	/* Enable SNP on all CPUs. */
+	on_each_cpu(snp_enable, NULL, 1);
+
+skip_enable:
+	rmptable_start = (unsigned long)start;
+	rmptable_end = rmptable_start + sz;
+
+	pr_info("RMP table physical address 0x%016llx - 0x%016llx\n", rmp_base, rmp_end);
+
+	return 0;
+}
+
+static int __init snp_rmptable_init(void)
+{
+	if (!boot_cpu_has(X86_FEATURE_SEV_SNP))
+		return 0;
+
+	/*
+	 * The SEV-SNP support requires that IOMMU must be enabled, and is not
+	 * configured in the passthrough mode.
+	 */
+	if (no_iommu || iommu_default_passthrough()) {
+		setup_clear_cpu_cap(X86_FEATURE_SEV_SNP);
+		pr_err("IOMMU is either disabled or configured in passthrough mode.\n");
+		return 0;
+	}
+
+	if (__snp_rmptable_init()) {
+		setup_clear_cpu_cap(X86_FEATURE_SEV_SNP);
+		return 1;
+	}
+
+	cpuhp_setup_state(CPUHP_AP_ONLINE_DYN, "x86/rmptable_init:online", __snp_enable, NULL);
+
+	return 0;
+}
+
+/*
+ * This must be called after the PCI subsystem. This is because before enabling
+ * the SNP feature we need to ensure that IOMMU is not configured in the
+ * passthrough mode. The iommu_default_passthrough() is used for checking the
+ * passthough state, and it is available after subsys_initcall().
+ */
+fs_initcall(snp_rmptable_init);
