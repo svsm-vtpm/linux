@@ -1678,6 +1678,9 @@ enum sev_cmd_id {
 	/* Guest Migration Extension */
 	KVM_SEV_SEND_CANCEL,
 
+	/* SNP specific commands */
+	KVM_SEV_SNP_INIT = 256,
+
 	KVM_SEV_NR_MAX,
 };
 
@@ -1772,6 +1775,10 @@ struct kvm_sev_receive_update_data {
 	__u32 guest_len;
 	__u64 trans_uaddr;
 	__u32 trans_len;
+};
+
+struct kvm_snp_init {
+	__u64 flags;
 };
 
 #define KVM_DEV_ASSIGN_ENABLE_IOMMU	(1 << 0)
