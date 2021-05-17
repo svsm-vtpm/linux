@@ -191,6 +191,11 @@ struct vcpu_svm {
 	bool guest_state_loaded;
 
 	u64 ghcb_registered_gpa;
+
+	struct mutex snp_vmsa_mutex;
+	gpa_t snp_vmsa_gpa;
+	kvm_pfn_t snp_vmsa_pfn;
+	bool snp_vmsa_update_on_init;	/* SEV-SNP AP Creation on INIT-SIPI */
 };
 
 struct svm_cpu_data {
@@ -554,7 +559,7 @@ void svm_vcpu_unblocking(struct kvm_vcpu *vcpu);
 #define GHCB_VERSION_MAX	2ULL
 #define GHCB_VERSION_MIN	1ULL
 
-#define GHCB_HV_FT_SUPPORTED	GHCB_HV_FT_SNP
+#define GHCB_HV_FT_SUPPORTED	(GHCB_HV_FT_SNP | GHCB_HV_FT_SNP_AP_CREATION)
 
 extern unsigned int max_sev_asid;
 
@@ -583,6 +588,7 @@ int sev_get_tdp_max_page_level(struct kvm_vcpu *vcpu, gpa_t gpa, int max_level);
 void sev_snp_write_page_begin(struct kvm *kvm, struct kvm_memory_slot *slot, gfn_t gfn);
 int snp_handle_rmp_page_fault(struct kvm_vcpu *vcpu, gpa_t gpa, kvm_pfn_t pfn,
 			      int level, u64 error_code);
+void sev_snp_update_protected_guest_state(struct kvm_vcpu *vcpu);
 
 /* vmenter.S */
 

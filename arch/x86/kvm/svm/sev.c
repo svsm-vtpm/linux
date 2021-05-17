@@ -2653,6 +2653,10 @@ static int sev_es_validate_vmgexit(struct vcpu_svm *svm)
 		if (!ghcb_sw_scratch_is_valid(ghcb))
 			goto vmgexit_err;
 		break;
+	case SVM_VMGEXIT_AP_CREATION:
+		if (!ghcb_rax_is_valid(ghcb))
+			goto vmgexit_err;
+		break;
 	case SVM_VMGEXIT_NMI_COMPLETE:
 	case SVM_VMGEXIT_AP_HLT_LOOP:
 	case SVM_VMGEXIT_AP_JUMP_TABLE:
@@ -3260,6 +3264,123 @@ static int sev_handle_vmgexit_msr_protocol(struct vcpu_svm *svm)
 	return ret;
 }
 
+void sev_snp_update_protected_guest_state(struct kvm_vcpu *vcpu)
+{
+	struct vcpu_svm *svm = to_svm(vcpu);
+	kvm_pfn_t pfn;
+
+	mutex_lock(&svm->snp_vmsa_mutex);
+
+	vcpu->arch.mp_state = KVM_MP_STATE_UNINITIALIZED;
+
+	/* Clear use of the VMSA in the sev_es_init_vmcb() path */
+	svm->vmsa_pa = 0;
+
+	/* Clear use of the VMSA from the VMCB */
+	svm->vmcb->control.vmsa_pa = 0;
+
+	/* Un-pin previous VMSA */
+	if (svm->snp_vmsa_pfn) {
+		kvm_release_pfn_dirty(svm->snp_vmsa_pfn);
+		svm->snp_vmsa_pfn = 0;
+	}
+
+	if (svm->snp_vmsa_gpa) {
+		/* Validate that the GPA is page aligned */
+		if (!PAGE_ALIGNED(svm->snp_vmsa_gpa))
+			goto e_unlock;
+
+		/*
+		 * The VMSA is referenced by thy hypervisor physical address,
+		 * so retrieve the PFN and pin it.
+		 */
+		pfn = gfn_to_pfn(vcpu->kvm, gpa_to_gfn(svm->snp_vmsa_gpa));
+		if (is_error_pfn(pfn))
+			goto e_unlock;
+
+		svm->snp_vmsa_pfn = pfn;
+
+		/* Use the new VMSA in the sev_es_init_vmcb() path */
+		svm->vmsa_pa = pfn_to_hpa(pfn);
+		svm->vmcb->control.vmsa_pa = svm->vmsa_pa;
+
+		vcpu->arch.mp_state = KVM_MP_STATE_RUNNABLE;
+	} else {
+		vcpu->arch.pv.pv_unhalted = false;
+		vcpu->arch.mp_state = KVM_MP_STATE_UNINITIALIZED;
+	}
+
+e_unlock:
+	mutex_unlock(&svm->snp_vmsa_mutex);
+}
+
+static void sev_snp_ap_creation(struct vcpu_svm *svm)
+{
+	struct kvm_vcpu *vcpu = &svm->vcpu;
+	struct kvm_vcpu *target_vcpu;
+	struct vcpu_svm *target_svm;
+	unsigned int request;
+	unsigned int apic_id;
+	u64 sev_features;
+	u64 int_inj_mode;
+	bool kick;
+
+	request = lower_32_bits(svm->vmcb->control.exit_info_1);
+	apic_id = upper_32_bits(svm->vmcb->control.exit_info_1);
+
+	/* Validate the APIC ID */
+	target_vcpu = kvm_get_vcpu_by_id(vcpu->kvm, apic_id);
+	if (!target_vcpu)
+		return;
+
+	target_svm = to_svm(target_vcpu);
+
+	/*
+	 * Restricted Injection mode and Alternate Injection mode are
+	 * not supported.
+	 */
+	sev_features = vcpu->arch.regs[VCPU_REGS_RAX];
+	int_inj_mode = sev_features & SVM_SEV_FEATURES_INT_INJ_MODES;
+
+	kick = true;
+
+	mutex_lock(&target_svm->snp_vmsa_mutex);
+
+	target_svm->snp_vmsa_gpa = 0;
+	target_svm->snp_vmsa_update_on_init = false;
+
+	switch (request) {
+	case SVM_VMGEXIT_AP_CREATE_ON_INIT:
+		if (!int_inj_mode) {
+			target_svm->snp_vmsa_update_on_init = true;
+			kick = false;
+		}
+		fallthrough;
+	case SVM_VMGEXIT_AP_CREATE:
+		if (!int_inj_mode) {
+			target_svm->snp_vmsa_gpa = svm->vmcb->control.exit_info_2;
+			break;
+		}
+
+		vcpu_unimpl(vcpu, "vmgexit: invalid AP injection mode [%#llx] from guest\n",
+			    int_inj_mode);
+		break;
+	case SVM_VMGEXIT_AP_DESTROY:
+		break;
+	default:
+		vcpu_unimpl(vcpu, "vmgexit: invalid AP creation request [%#x] from guest\n",
+			    request);
+		break;
+	}
+
+	mutex_unlock(&target_svm->snp_vmsa_mutex);
+
+	if (kick) {
+		kvm_make_request(KVM_REQ_UPDATE_PROTECTED_GUEST_STATE, target_vcpu);
+		kvm_vcpu_kick(target_vcpu);
+	}
+}
+
 int sev_handle_vmgexit(struct kvm_vcpu *vcpu)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
@@ -3379,6 +3500,11 @@ int sev_handle_vmgexit(struct kvm_vcpu *vcpu)
 		ret = 1;
 		break;
 	}
+	case SVM_VMGEXIT_AP_CREATION:
+		sev_snp_ap_creation(svm);
+
+		ret = 1;
+		break;
 	case SVM_VMGEXIT_UNSUPPORTED_EVENT:
 		vcpu_unimpl(vcpu,
 			    "vmgexit: unsupported event - exit_info_1=%#llx, exit_info_2=%#llx\n",
@@ -3453,6 +3579,8 @@ void sev_es_create_vcpu(struct vcpu_svm *svm)
 	set_ghcb_msr(svm, GHCB_MSR_SEV_INFO(GHCB_VERSION_MAX,
 					    GHCB_VERSION_MIN,
 					    sev_enc_bit));
+
+	mutex_init(&svm->snp_vmsa_mutex);
 }
 
 void sev_es_prepare_guest_switch(struct vcpu_svm *svm, unsigned int cpu)
