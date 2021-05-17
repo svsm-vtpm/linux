@@ -9,6 +9,7 @@
 #define __ASM_ENCRYPTED_STATE_H
 
 #include <linux/types.h>
+#include <linux/sev.h>
 #include <asm/insn.h>
 #include <asm/sev-common.h>
 
@@ -73,9 +74,6 @@ struct cc_blob_sev_info {
 
 /* Software defined (when rFlags.CF = 1) */
 #define PVALIDATE_FAIL_NOUPDATE		255
-
-/* RMP page size */
-#define RMP_PG_SIZE_4K			0
 
 /* Memory opertion for snp_prep_memory() */
 enum snp_mem_op {
