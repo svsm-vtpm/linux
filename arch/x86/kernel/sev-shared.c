@@ -20,6 +20,7 @@
  * out when the .bss section is later cleared.
  */
 static u16 ghcb_version __section(".data");
+static u64 hv_features __section(".data");
 
 static bool __init sev_es_check_cpu_features(void)
 {
@@ -49,6 +50,22 @@ static void __noreturn sev_es_terminate(unsigned int set, unsigned int reason)
 		asm volatile("hlt\n" : : : "memory");
 }
 
+static bool get_hv_features(void)
+{
+	u64 val;
+
+	sev_es_wr_ghcb_msr(GHCB_MSR_HV_FT_REQ);
+	VMGEXIT();
+
+	val = sev_es_rd_ghcb_msr();
+	if (GHCB_RESP_CODE(val) != GHCB_MSR_HV_FT_RESP)
+		return false;
+
+	hv_features = GHCB_MSR_HV_FT_RESP_VAL(val);
+
+	return true;
+}
+
 static bool sev_es_negotiate_protocol(void)
 {
 	u64 val;
@@ -66,6 +83,10 @@ static bool sev_es_negotiate_protocol(void)
 		return false;
 
 	ghcb_version = min_t(size_t, GHCB_MSR_PROTO_MAX(val), GHCB_PROTOCOL_MAX);
+
+	/* The hypervisor features are available from version 2 onward. */
+	if ((ghcb_version >= 2) && !get_hv_features())
+		return false;
 
 	return true;
 }
