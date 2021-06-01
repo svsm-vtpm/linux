@@ -16,6 +16,12 @@
 
 #include <asm/bootparam.h>
 
+enum sev_feature_type {
+	SEV,
+	SEV_ES,
+	SEV_SNP
+};
+
 #ifdef CONFIG_AMD_MEM_ENCRYPT
 
 extern u64 sme_me_mask;
@@ -53,6 +59,7 @@ void __init sev_es_init_vc_handling(void);
 bool sme_active(void);
 bool sev_active(void);
 bool sev_es_active(void);
+bool sev_feature_enabled(unsigned int feature_type);
 
 #define __bss_decrypted __section(".bss..decrypted")
 
@@ -78,6 +85,7 @@ static inline void sev_es_init_vc_handling(void) { }
 static inline bool sme_active(void) { return false; }
 static inline bool sev_active(void) { return false; }
 static inline bool sev_es_active(void) { return false; }
+static inline bool sev_snp_active(void) { return false; }
 
 static inline int __init
 early_set_memory_decrypted(unsigned long vaddr, unsigned long size) { return 0; }
@@ -85,6 +93,7 @@ static inline int __init
 early_set_memory_encrypted(unsigned long vaddr, unsigned long size) { return 0; }
 
 static inline void mem_encrypt_free_decrypted_mem(void) { }
+static bool sev_feature_enabled(unsigned int feature_type) { return false; }
 
 #define __bss_decrypted
 
