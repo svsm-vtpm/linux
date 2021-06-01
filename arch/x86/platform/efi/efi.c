@@ -57,6 +57,7 @@ static unsigned long efi_systab_phys __initdata;
 static unsigned long prop_phys = EFI_INVALID_TABLE_ADDR;
 static unsigned long uga_phys = EFI_INVALID_TABLE_ADDR;
 static unsigned long efi_runtime, efi_nr_tables;
+unsigned long cc_blob_phys;
 
 unsigned long efi_fw_vendor, efi_config_table;
 
@@ -66,6 +67,7 @@ static const efi_config_table_type_t arch_tables[] __initconst = {
 #ifdef CONFIG_X86_UV
 	{UV_SYSTEM_TABLE_GUID,		&uv_systab_phys,	"UVsystab"	},
 #endif
+	{EFI_CC_BLOB_GUID,		&cc_blob_phys,		"CC blob"	},
 	{},
 };
 
