@@ -75,6 +75,8 @@ Protocol 2.14	BURNT BY INCORRECT COMMIT
 		DO NOT USE!!! ASSUME SAME AS 2.13.
 
 Protocol 2.15	(Kernel 5.5) Added the kernel_info and kernel_info.setup_type_max.
+
+Protocol 2.16	(Kernel 5.14) Added the confidential computing blob address
 =============	============================================================
 
 .. note::
@@ -226,6 +228,7 @@ Offset/Size	Proto		Name			Meaning
 0260/4		2.10+		init_size		Linear memory required during initialization
 0264/4		2.11+		handover_offset		Offset of handover entry point
 0268/4		2.15+		kernel_info_offset	Offset of the kernel_info
+026C/4		2.16+		cc_blob_address	        Physical address of the confidential computing blob
 ===========	========	=====================	============================================
 
 .. note::
@@ -1026,6 +1029,30 @@ Offset/size:	0x000c/4
 
   This field contains maximal allowed type for setup_data and setup_indirect structs.
 
+============	==================
+Field name:	cc_blob_address
+Type:		write (optional)
+Offset/size:	0x26C/4
+Protocol:	2.16+
+============	==================
+
+  This field can be set by the boot loader to tell the kernel the physical address
+  of the confidential computing blob info.
+
+  A value of 0 indicates that either the blob is not provided or use the EFI configuration
+  table to retrieve the blob location.
+
+  In the case of AMD SEV the blob look like this::
+
+  struct cc_blob_sev_info {
+        u32 magic;      /* 0x45444d41 (AMDE) */
+        u16 version;
+        u16 reserved;
+        u64 secrets_phys; /* pointer to secrets page */
+        u32 secrets_len;
+        u64 cpuid_phys;   /* pointer to cpuid page */
+        u32 cpuid_len;
+  }
 
 The Image Checksum
 ==================
