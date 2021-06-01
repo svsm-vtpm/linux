@@ -19,6 +19,7 @@
 #include <linux/memblock.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
+#include <linux/cpumask.h>
 
 #include <asm/cpu_entry_area.h>
 #include <asm/stacktrace.h>
@@ -31,6 +32,7 @@
 #include <asm/svm.h>
 #include <asm/smp.h>
 #include <asm/cpu.h>
+#include <asm/apic.h>
 
 #include "sev-internal.h"
 
@@ -105,6 +107,8 @@ struct ghcb_state {
 
 static DEFINE_PER_CPU(struct sev_es_runtime_data*, runtime_data);
 DEFINE_STATIC_KEY_FALSE(sev_es_enable_key);
+
+static DEFINE_PER_CPU(struct sev_es_save_area *, snp_vmsa);
 
 /* Needed in vc_early_forward_exception */
 void do_early_exception(struct pt_regs *regs, int trapnr);
@@ -742,6 +746,208 @@ void snp_set_memory_private(unsigned long vaddr, unsigned int npages)
 	set_page_state(vaddr, npages, SNP_PAGE_STATE_PRIVATE);
 
 	pvalidate_pages(vaddr, npages, 1);
+}
+
+static int snp_rmpadjust(void *va, unsigned int vmpl, unsigned int perm_mask, bool vmsa)
+{
+	unsigned int attrs;
+	int err;
+
+	attrs = (vmpl & RMPADJUST_VMPL_MASK) << RMPADJUST_VMPL_SHIFT;
+	attrs |= (perm_mask & RMPADJUST_PERM_MASK_MASK) << RMPADJUST_PERM_MASK_SHIFT;
+	if (vmsa)
+		attrs |= RMPADJUST_VMSA_PAGE_BIT;
+
+	/* Perform RMPADJUST */
+	asm volatile (".byte 0xf3,0x0f,0x01,0xfe\n\t"
+		      : "=a" (err)
+		      : "a" (va), "c" (0), "d" (attrs)
+		      : "memory", "cc");
+
+	return err;
+}
+
+static int snp_clear_vmsa(void *vmsa)
+{
+	/*
+	 * Clear the VMSA attribute for the page:
+	 *   RDX[7:0]  = 1, Target VMPL level, must be numerically
+	 *		    higher than current level (VMPL0)
+	 *   RDX[15:8] = 0, Target permission mask (not used)
+	 *   RDX[16]   = 0, Not a VMSA page
+	 */
+	return snp_rmpadjust(vmsa, RMPADJUST_VMPL_MAX, 0, false);
+}
+
+static int snp_set_vmsa(void *vmsa)
+{
+	/*
+	 * To set the VMSA attribute for the page:
+	 *   RDX[7:0]  = 1, Target VMPL level, must be numerically
+	 *		    higher than current level (VMPL0)
+	 *   RDX[15:8] = 0, Target permission mask (not used)
+	 *   RDX[16]   = 1, VMSA page
+	 */
+	return snp_rmpadjust(vmsa, RMPADJUST_VMPL_MAX, 0, true);
+}
+
+#define INIT_CS_ATTRIBS		(SVM_SELECTOR_P_MASK | SVM_SELECTOR_S_MASK | SVM_SELECTOR_READ_MASK | SVM_SELECTOR_CODE_MASK)
+#define INIT_DS_ATTRIBS		(SVM_SELECTOR_P_MASK | SVM_SELECTOR_S_MASK | SVM_SELECTOR_WRITE_MASK)
+
+#define INIT_LDTR_ATTRIBS	(SVM_SELECTOR_P_MASK | 2)
+#define INIT_TR_ATTRIBS		(SVM_SELECTOR_P_MASK | 3)
+
+static int snp_wakeup_cpu_via_vmgexit(int apic_id, unsigned long start_ip)
+{
+	struct sev_es_save_area *cur_vmsa;
+	struct sev_es_save_area *vmsa;
+	struct ghcb_state state;
+	struct ghcb *ghcb;
+	unsigned long flags;
+	u8 sipi_vector;
+	u64 cr4;
+	int cpu;
+	int ret;
+
+	if (!snp_ap_creation_supported())
+		return -ENOTSUPP;
+
+	/* Override start_ip with known SEV-ES/SEV-SNP starting RIP */
+	if (start_ip == real_mode_header->trampoline_start) {
+		start_ip = real_mode_header->sev_es_trampoline_start;
+	} else {
+		WARN_ONCE(1, "unsupported SEV-SNP start_ip: %lx\n", start_ip);
+		return -EINVAL;
+	}
+
+	/* Find the logical CPU for the APIC ID */
+	for_each_present_cpu(cpu) {
+		if (arch_match_cpu_phys_id(cpu, apic_id))
+			break;
+	}
+	if (cpu >= nr_cpu_ids)
+		return -EINVAL;
+
+	cur_vmsa = per_cpu(snp_vmsa, cpu);
+	vmsa = (struct sev_es_save_area *)get_zeroed_page(GFP_KERNEL);
+	if (!vmsa)
+		return -ENOMEM;
+
+	/* CR4 should maintain the MCE value */
+	cr4 = native_read_cr4() & ~X86_CR4_MCE;
+
+	/* Set the CS value based on the start_ip converted to a SIPI vector */
+	sipi_vector = (start_ip >> 12);
+	vmsa->cs.base     = sipi_vector << 12;
+	vmsa->cs.limit    = 0xffff;
+	vmsa->cs.attrib   = INIT_CS_ATTRIBS;
+	vmsa->cs.selector = sipi_vector << 8;
+
+	/* Set the RIP value based on start_ip */
+	vmsa->rip = start_ip & 0xfff;
+
+	/* Set VMSA entries to the INIT values as documented in the APM */
+	vmsa->ds.limit    = 0xffff;
+	vmsa->ds.attrib   = INIT_DS_ATTRIBS;
+	vmsa->es = vmsa->ds;
+	vmsa->fs = vmsa->ds;
+	vmsa->gs = vmsa->ds;
+	vmsa->ss = vmsa->ds;
+
+	vmsa->gdtr.limit    = 0xffff;
+	vmsa->ldtr.limit    = 0xffff;
+	vmsa->ldtr.attrib   = INIT_LDTR_ATTRIBS;
+	vmsa->idtr.limit    = 0xffff;
+	vmsa->tr.limit      = 0xffff;
+	vmsa->tr.attrib     = INIT_TR_ATTRIBS;
+
+	vmsa->efer    = 0x1000;			/* Must set SVME bit */
+	vmsa->cr4     = cr4;
+	vmsa->cr0     = 0x60000010;
+	vmsa->dr7     = 0x400;
+	vmsa->dr6     = 0xffff0ff0;
+	vmsa->rflags  = 0x2;
+	vmsa->g_pat   = 0x0007040600070406ULL;
+	vmsa->xcr0    = 0x1;
+	vmsa->mxcsr   = 0x1f80;
+	vmsa->x87_ftw = 0x5555;
+	vmsa->x87_fcw = 0x0040;
+
+	/*
+	 * Set the SNP-specific fields for this VMSA:
+	 *   VMPL level
+	 *   SEV_FEATURES (matches the SEV STATUS MSR right shifted 2 bits)
+	 */
+	vmsa->vmpl = 0;
+	vmsa->sev_features = sev_status >> 2;
+
+	/* Switch the page over to a VMSA page now that it is initialized */
+	ret = snp_set_vmsa(vmsa);
+	if (ret) {
+		pr_err("set VMSA page failed (%u)\n", ret);
+		free_page((unsigned long)vmsa);
+
+		return -EINVAL;
+	}
+
+	/* Issue VMGEXIT AP Creation NAE event */
+	local_irq_save(flags);
+
+	ghcb = sev_es_get_ghcb(&state);
+
+	vc_ghcb_invalidate(ghcb);
+	ghcb_set_rax(ghcb, vmsa->sev_features);
+	ghcb_set_sw_exit_code(ghcb, SVM_VMGEXIT_AP_CREATION);
+	ghcb_set_sw_exit_info_1(ghcb, ((u64)apic_id << 32) | SVM_VMGEXIT_AP_CREATE);
+	ghcb_set_sw_exit_info_2(ghcb, __pa(vmsa));
+
+	sev_es_wr_ghcb_msr(__pa(ghcb));
+	VMGEXIT();
+
+	if (!ghcb_sw_exit_info_1_is_valid(ghcb) ||
+	    lower_32_bits(ghcb->save.sw_exit_info_1)) {
+		pr_alert("SNP AP Creation error\n");
+		ret = -EINVAL;
+	}
+
+	sev_es_put_ghcb(&state);
+
+	local_irq_restore(flags);
+
+	/* Perform cleanup if there was an error */
+	if (ret) {
+		int err = snp_clear_vmsa(vmsa);
+
+		if (err)
+			pr_err("clear VMSA page failed (%u), leaking page\n", err);
+		else
+			free_page((unsigned long)vmsa);
+
+		vmsa = NULL;
+	}
+
+	/* Free up any previous VMSA page */
+	if (cur_vmsa) {
+		int err = snp_clear_vmsa(cur_vmsa);
+
+		if (err)
+			pr_err("clear VMSA page failed (%u), leaking page\n", err);
+		else
+			free_page((unsigned long)cur_vmsa);
+	}
+
+	/* Record the current VMSA page */
+	cur_vmsa = vmsa;
+
+	return ret;
+}
+
+void snp_setup_wakeup_secondary_cpu(void)
+{
+	if (!sev_feature_enabled(SEV_SNP))
+		return;
+
+	apic->wakeup_secondary_cpu = snp_wakeup_cpu_via_vmgexit;
 }
 
 int sev_es_setup_ap_jump_table(struct real_mode_header *rmh)

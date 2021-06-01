@@ -32,6 +32,11 @@ static bool __init sev_es_check_cpu_features(void)
 	return true;
 }
 
+static bool snp_ap_creation_supported(void)
+{
+	return (hv_features & GHCB_HV_FT_SNP_AP_CREATION) == GHCB_HV_FT_SNP_AP_CREATION;
+}
+
 static bool __init sev_snp_check_hypervisor_features(void)
 {
 	if (ghcb_version < 2)
