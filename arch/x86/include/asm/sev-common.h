@@ -51,6 +51,8 @@
 #define GHCB_MSR_HV_FT_POS	12
 #define GHCB_MSR_HV_FT_MASK	GENMASK_ULL(51, 0)
 
+#define GHCB_HV_FT_SNP		BIT_ULL(0)
+
 #define GHCB_MSR_HV_FT_RESP_VAL(v)	\
 	(((unsigned long)((v) & GHCB_MSR_HV_FT_MASK) >> GHCB_MSR_HV_FT_POS))
 
@@ -65,6 +67,7 @@
 
 #define GHCB_SEV_ES_GEN_REQ		0
 #define GHCB_SEV_ES_PROT_UNSUPPORTED	1
+#define GHCB_SEV_ES_SNP_UNSUPPORTED	2
 
 #define GHCB_RESP_CODE(v)		((v) & GHCB_MSR_INFO_MASK)
 

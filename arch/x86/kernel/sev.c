@@ -609,6 +609,10 @@ static bool __init sev_es_setup_ghcb(void)
 	if (!sev_es_negotiate_protocol())
 		return false;
 
+	/* If SNP is active, make sure that hypervisor supports the feature. */
+	if (sev_feature_enabled(SEV_SNP) && !sev_snp_check_hypervisor_features())
+		sev_es_terminate(0, GHCB_SEV_ES_SNP_UNSUPPORTED);
+
 	/*
 	 * Clear the boot_ghcb. The first exception comes in before the bss
 	 * section is cleared.

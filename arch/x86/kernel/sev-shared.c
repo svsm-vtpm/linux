@@ -32,6 +32,17 @@ static bool __init sev_es_check_cpu_features(void)
 	return true;
 }
 
+static bool __init sev_snp_check_hypervisor_features(void)
+{
+	if (ghcb_version < 2)
+		return false;
+
+	if (!(hv_features & GHCB_HV_FT_SNP))
+		return false;
+
+	return true;
+}
+
 static void __noreturn sev_es_terminate(unsigned int set, unsigned int reason)
 {
 	u64 val = GHCB_MSR_TERM_REQ;
