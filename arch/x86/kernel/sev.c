@@ -637,6 +637,113 @@ void __init snp_prep_memory(unsigned long paddr, unsigned int sz, int op)
 	WARN(1, "invalid memory op %d\n", op);
 }
 
+static int page_state_vmgexit(struct ghcb *ghcb, struct snp_page_state_change *data)
+{
+	struct snp_page_state_header *hdr;
+	int ret = 0;
+
+	hdr = &data->header;
+
+	/*
+	 * As per the GHCB specification, the hypervisor can resume the guest before
+	 * processing all the entries. The loop checks whether all the entries are
+	 * processed. If not, then keep retrying.
+	 */
+	while (hdr->cur_entry <= hdr->end_entry) {
+
+		ghcb_set_sw_scratch(ghcb, (u64)__pa(data));
+
+		ret = sev_es_ghcb_hv_call(ghcb, NULL, SVM_VMGEXIT_PSC, 0, 0);
+
+		/* Page State Change VMGEXIT can pass error code through exit_info_2. */
+		if (WARN(ret || ghcb->save.sw_exit_info_2,
+			 "SEV-SNP: page state change failed ret=%d exit_info_2=%llx\n",
+			 ret, ghcb->save.sw_exit_info_2))
+			return 1;
+	}
+
+	return 0;
+}
+
+static void set_page_state(unsigned long vaddr, unsigned int npages, int op)
+{
+	struct snp_page_state_change *data;
+	struct snp_page_state_header *hdr;
+	struct snp_page_state_entry *e;
+	unsigned long vaddr_end;
+	struct ghcb_state state;
+	struct ghcb *ghcb;
+	int idx;
+
+	vaddr = vaddr & PAGE_MASK;
+	vaddr_end = vaddr + (npages << PAGE_SHIFT);
+
+	ghcb = sev_es_get_ghcb(&state);
+	if (unlikely(!ghcb))
+		panic("SEV-SNP: Failed to get GHCB\n");
+
+	data = (struct snp_page_state_change *)ghcb->shared_buffer;
+	hdr = &data->header;
+
+	while (vaddr < vaddr_end) {
+		e = data->entry;
+		memset(data, 0, sizeof(*data));
+
+		for (idx = 0; idx < VMGEXIT_PSC_MAX_ENTRY; idx++, e++) {
+			unsigned long pfn;
+
+			if (is_vmalloc_addr((void *)vaddr))
+				pfn = vmalloc_to_pfn((void *)vaddr);
+			else
+				pfn = __pa(vaddr) >> PAGE_SHIFT;
+
+			e->gfn = pfn;
+			e->operation = op;
+			hdr->end_entry = idx;
+
+			/*
+			 * The GHCB specification provides the flexibility to
+			 * use either 4K or 2MB page size in the RMP table.
+			 * The current SNP support does not keep track of the
+			 * page size used in the RMP table. To avoid the
+			 * overlap request, use the 4K page size in the RMP
+			 * table.
+			 */
+			e->pagesize = RMP_PG_SIZE_4K;
+			vaddr = vaddr + PAGE_SIZE;
+
+			if (vaddr >= vaddr_end)
+				break;
+		}
+
+		/* Terminate the guest on page state change failure. */
+		if (page_state_vmgexit(ghcb, data))
+			sev_es_terminate(1, GHCB_TERM_PSC);
+	}
+
+	sev_es_put_ghcb(&state);
+}
+
+void snp_set_memory_shared(unsigned long vaddr, unsigned int npages)
+{
+	if (!sev_feature_enabled(SEV_SNP))
+		return;
+
+	pvalidate_pages(vaddr, npages, 0);
+
+	set_page_state(vaddr, npages, SNP_PAGE_STATE_SHARED);
+}
+
+void snp_set_memory_private(unsigned long vaddr, unsigned int npages)
+{
+	if (!sev_feature_enabled(SEV_SNP))
+		return;
+
+	set_page_state(vaddr, npages, SNP_PAGE_STATE_PRIVATE);
+
+	pvalidate_pages(vaddr, npages, 1);
+}
+
 int sev_es_setup_ap_jump_table(struct real_mode_header *rmh)
 {
 	u16 startup_cs, startup_ip;

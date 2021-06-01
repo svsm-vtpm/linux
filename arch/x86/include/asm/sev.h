@@ -114,6 +114,8 @@ void __init early_snp_set_memory_private(unsigned long vaddr, unsigned long padd
 void __init early_snp_set_memory_shared(unsigned long vaddr, unsigned long paddr,
 		unsigned int npages);
 void __init snp_prep_memory(unsigned long paddr, unsigned int sz, int op);
+void snp_set_memory_shared(unsigned long vaddr, unsigned int npages);
+void snp_set_memory_private(unsigned long vaddr, unsigned int npages);
 #else
 static inline void sev_es_ist_enter(struct pt_regs *regs) { }
 static inline void sev_es_ist_exit(void) { }
@@ -130,6 +132,8 @@ early_snp_set_memory_shared(unsigned long vaddr, unsigned long paddr, unsigned i
 {
 }
 static inline void __init snp_prep_memory(unsigned long paddr, unsigned int sz, int op) { }
+static inline void snp_set_memory_shared(unsigned long vaddr, unsigned int npages) { }
+static inline void snp_set_memory_private(unsigned long vaddr, unsigned int npages) { }
 #endif
 
 #endif
