@@ -18,6 +18,7 @@
 #include <linux/processor.h>
 #include <linux/trace_events.h>
 #include <linux/sev.h>
+#include <linux/kvm_host.h>
 #include <asm/fpu/internal.h>
 
 #include <asm/trapnr.h>
@@ -1515,6 +1516,7 @@ static int sev_receive_finish(struct kvm *kvm, struct kvm_sev_cmd *argp)
 
 static void *snp_context_create(struct kvm *kvm, struct kvm_sev_cmd *argp)
 {
+	struct kvm_sev_info *sev = &to_kvm_svm(kvm)->sev_info;
 	struct sev_data_snp_gctx_create data = {};
 	void *context;
 	int rc;
@@ -1524,14 +1526,24 @@ static void *snp_context_create(struct kvm *kvm, struct kvm_sev_cmd *argp)
 	if (!context)
 		return NULL;
 
-	data.gctx_paddr = __psp_pa(context);
-	rc = __sev_issue_cmd(argp->sev_fd, SEV_CMD_SNP_GCTX_CREATE, &data, &argp->error);
-	if (rc) {
+	/* Allocate a firmware buffer used during the guest command handling. */
+	sev->snp_resp_page = snp_alloc_firmware_page(GFP_KERNEL_ACCOUNT);
+	if (!sev->snp_resp_page) {
 		snp_free_firmware_page(context);
 		return NULL;
 	}
 
+	data.gctx_paddr = __psp_pa(context);
+	rc = __sev_issue_cmd(argp->sev_fd, SEV_CMD_SNP_GCTX_CREATE, &data, &argp->error);
+	if (rc)
+		goto e_free;
+
 	return context;
+
+e_free:
+	snp_free_firmware_page(context);
+	snp_free_firmware_page(sev->snp_resp_page);
+	return NULL;
 }
 
 static int snp_bind_asid(struct kvm *kvm, int *error)
@@ -1598,6 +1610,9 @@ static int snp_launch_start(struct kvm *kvm, struct kvm_sev_cmd *argp)
 	rc = snp_bind_asid(kvm, &argp->error);
 	if (rc)
 		goto e_free_context;
+
+	/* Used for rate limiting SNP guest message request, use the default settings */
+	ratelimit_default_init(&sev->snp_guest_msg_rs);
 
 	return 0;
 
@@ -2196,6 +2211,9 @@ static int snp_decommission_context(struct kvm *kvm)
 	snp_free_firmware_page(sev->snp_context);
 	sev->snp_context = NULL;
 
+	/* Free the response page. */
+	snp_free_firmware_page(sev->snp_resp_page);
+
 	return 0;
 }
 
@@ -2641,6 +2659,7 @@ static int sev_es_validate_vmgexit(struct vcpu_svm *svm)
 	case SVM_VMGEXIT_UNSUPPORTED_EVENT:
 	case SVM_VMGEXIT_HV_FT:
 	case SVM_VMGEXIT_PSC:
+	case SVM_VMGEXIT_GUEST_REQUEST:
 		break;
 	default:
 		goto vmgexit_err;
@@ -3031,6 +3050,76 @@ out:
 	return rc ? map_to_psc_vmgexit_code(rc) : 0;
 }
 
+static void snp_handle_guest_request(struct vcpu_svm *svm, struct ghcb *ghcb,
+				    gpa_t req_gpa, gpa_t resp_gpa)
+{
+	struct sev_data_snp_guest_request data = {};
+	struct kvm_vcpu *vcpu = &svm->vcpu;
+	struct kvm *kvm = vcpu->kvm;
+	kvm_pfn_t req_pfn, resp_pfn;
+	struct kvm_sev_info *sev;
+	int rc, err = 0;
+
+	if (!sev_snp_guest(vcpu->kvm)) {
+		rc = -ENODEV;
+		goto e_fail;
+	}
+
+	sev = &to_kvm_svm(kvm)->sev_info;
+
+	if (!__ratelimit(&sev->snp_guest_msg_rs)) {
+		pr_info_ratelimited("svm: too many guest message requests\n");
+		rc = -EAGAIN;
+		goto e_fail;
+	}
+
+	if (!IS_ALIGNED(req_gpa, PAGE_SIZE) || !IS_ALIGNED(resp_gpa, PAGE_SIZE)) {
+		pr_err_ratelimited("svm: guest request (%#llx) or response (%#llx) is not page aligned\n",
+			req_gpa, resp_gpa);
+		rc = -EINVAL;
+		goto e_fail;
+	}
+
+	req_pfn = gfn_to_pfn(kvm, gpa_to_gfn(req_gpa));
+	if (is_error_noslot_pfn(req_pfn)) {
+		pr_err_ratelimited("svm: guest request invalid gpa=%#llx\n", req_gpa);
+		rc = -EINVAL;
+		goto e_fail;
+	}
+
+	resp_pfn = gfn_to_pfn(kvm, gpa_to_gfn(resp_gpa));
+	if (is_error_noslot_pfn(resp_pfn)) {
+		pr_err_ratelimited("svm: guest response invalid gpa=%#llx\n", resp_gpa);
+		rc = -EINVAL;
+		goto e_fail;
+	}
+
+	data.gctx_paddr = __psp_pa(sev->snp_context);
+	data.req_paddr = __sme_set(req_pfn << PAGE_SHIFT);
+	data.res_paddr = __psp_pa(sev->snp_resp_page);
+
+	mutex_lock(&kvm->lock);
+
+	rc = sev_issue_cmd(kvm, SEV_CMD_SNP_GUEST_REQUEST, &data, &err);
+	if (rc) {
+		mutex_unlock(&kvm->lock);
+
+		/* If we have a firmware error code then use it. */
+		if (err)
+			rc = err;
+
+		goto e_fail;
+	}
+
+	/* Copy the response after the firmware returns success. */
+	rc = kvm_write_guest(kvm, resp_gpa, sev->snp_resp_page, PAGE_SIZE);
+
+	mutex_unlock(&kvm->lock);
+
+e_fail:
+	ghcb_set_sw_exit_info_2(ghcb, rc);
+}
+
 static int sev_handle_vmgexit_msr_protocol(struct vcpu_svm *svm)
 {
 	struct vmcb_control_area *control = &svm->vmcb->control;
@@ -3282,6 +3371,12 @@ int sev_handle_vmgexit(struct kvm_vcpu *vcpu)
 
 		rc = snp_handle_page_state_change(svm, ghcb);
 		ghcb_set_sw_exit_info_2(ghcb, rc);
+		break;
+	}
+	case SVM_VMGEXIT_GUEST_REQUEST: {
+		snp_handle_guest_request(svm, ghcb, control->exit_info_1, control->exit_info_2);
+
+		ret = 1;
 		break;
 	}
 	case SVM_VMGEXIT_UNSUPPORTED_EVENT:
