@@ -46,6 +46,7 @@
 #include <asm/proto.h>
 #include <asm/unwind.h>
 #include <asm/vsyscall.h>
+#include <asm/sev.h>
 #include <linux/vmalloc.h>
 
 /*
@@ -1091,6 +1092,8 @@ void __init setup_arch(char **cmdline_p)
 	trim_snb_memory();
 
 	init_mem_mapping();
+
+	sev_snp_cpuid_init_remap_early();
 
 	idt_setup_early_pf();
 
