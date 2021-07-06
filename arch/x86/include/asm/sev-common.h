@@ -45,6 +45,17 @@
 		(((unsigned long)reg & GHCB_MSR_CPUID_REG_MASK) << GHCB_MSR_CPUID_REG_POS) | \
 		(((unsigned long)fn) << GHCB_MSR_CPUID_FUNC_POS))
 
+/* GHCB GPA Register */
+#define GHCB_MSR_GPA_REG_REQ		0x012
+#define GHCB_MSR_GPA_REG_VALUE_POS	12
+#define GHCB_MSR_GPA_REG_GFN_MASK	GENMASK_ULL(51, 0)
+#define GHCB_MSR_GPA_REQ_GFN_VAL(v)		\
+	(((unsigned long)((v) & GHCB_MSR_GPA_REG_GFN_MASK) << GHCB_MSR_GPA_REG_VALUE_POS)| \
+	GHCB_MSR_GPA_REG_REQ)
+
+#define GHCB_MSR_GPA_REG_RESP		0x013
+#define GHCB_MSR_GPA_REG_RESP_VAL(v)	((v) >> GHCB_MSR_GPA_REG_VALUE_POS)
+
 /* SNP Page State Change */
 #define GHCB_MSR_PSC_REQ		0x014
 #define SNP_PAGE_STATE_PRIVATE		1
