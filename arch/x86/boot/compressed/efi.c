@@ -176,3 +176,4 @@ efi_get_conf_table(struct boot_params *boot_params,
 
 	return 0;
 }
+

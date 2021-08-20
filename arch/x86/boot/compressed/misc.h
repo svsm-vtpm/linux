@@ -190,6 +190,7 @@ int efi_get_conf_table(struct boot_params *boot_params,
 		       unsigned long *conf_table_pa,
 		       unsigned int *conf_table_len,
 		       bool *is_efi_64);
+
 #else
 static inline int
 efi_find_vendor_table(unsigned long conf_table_pa, unsigned int conf_table_len,
