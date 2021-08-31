@@ -80,6 +80,14 @@ extern bool handle_vc_boot_ghcb(struct pt_regs *regs);
 
 #define RMPADJUST_VMSA_PAGE_BIT		BIT(16)
 
+/* SNP Guest message request */
+struct snp_guest_request_data {
+	unsigned long req_gpa;
+	unsigned long resp_gpa;
+	unsigned long data_gpa;
+	unsigned int data_npages;
+};
+
 #ifdef CONFIG_AMD_MEM_ENCRYPT
 extern struct static_key_false sev_es_enable_key;
 extern void __sev_es_ist_enter(struct pt_regs *regs);
@@ -134,6 +142,8 @@ void sev_snp_cpuid_init_virtual(void);
 void sev_snp_cpuid_init_remap_early(void);
 #endif /* __BOOT_COMPRESSED */
 void sev_snp_cpuid_init(struct boot_params *bp);
+int snp_issue_guest_request(u64 exit_code, struct snp_guest_request_data *input,
+			    unsigned long *fw_err);
 #else
 static inline void sev_es_ist_enter(struct pt_regs *regs) { }
 static inline void sev_es_ist_exit(void) { }
@@ -150,6 +160,11 @@ static inline void snp_set_memory_shared(unsigned long vaddr, unsigned int npage
 static inline void snp_set_memory_private(unsigned long vaddr, unsigned int npages) { }
 static inline void snp_set_wakeup_secondary_cpu(void) { }
 static inline void sev_snp_cpuid_init(struct boot_params *bp) { }
+static int snp_issue_guest_request(u64 exit_code, struct snp_guest_request_data *input,
+				   unsigned long *fw_err)
+{
+	return -ENOTTY;
+}
 #ifdef __BOOT_COMPRESSED
 static inline bool sev_snp_enabled { return false; }
 #else
