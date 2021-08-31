@@ -26,6 +26,7 @@
 #include <asm/fpu/internal.h>
 #include <asm/processor.h>
 #include <asm/realmode.h>
+#include <asm/setup.h>
 #include <asm/traps.h>
 #include <asm/svm.h>
 #include <asm/smp.h>
@@ -102,9 +103,6 @@ struct ghcb_state {
 
 static DEFINE_PER_CPU(struct sev_es_runtime_data*, runtime_data);
 DEFINE_STATIC_KEY_FALSE(sev_es_enable_key);
-
-/* Needed in vc_early_forward_exception */
-void do_early_exception(struct pt_regs *regs, int trapnr);
 
 static void __init setup_vc_stacks(int cpu)
 {
@@ -197,9 +195,6 @@ void noinstr __sev_es_ist_exit(void)
 	/* Read back old IST entry and write it to the TSS */
 	this_cpu_write(cpu_tss_rw.x86_tss.ist[IST_INDEX_VC], *(unsigned long *)ist);
 }
-
-/* Needed in vc_early_forward_exception */
-void do_early_exception(struct pt_regs *regs, int trapnr);
 
 static inline u64 sev_es_rd_ghcb_msr(void)
 {
