@@ -19,6 +19,8 @@
 #include <linux/kernel.h>
 #include <linux/mm.h>
 #include <linux/cpumask.h>
+#include <linux/log2.h>
+#include <linux/efi.h>
 
 #include <asm/cpu_entry_area.h>
 #include <asm/stacktrace.h>
@@ -33,6 +35,8 @@
 #include <asm/smp.h>
 #include <asm/cpu.h>
 #include <asm/apic.h>
+#include <asm/efi.h>
+#include <asm/cpuid.h>
 
 #define DR7_RESET_VALUE        0x400
 
