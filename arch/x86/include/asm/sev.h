@@ -106,6 +106,11 @@ struct __packed rmpentry {
 
 #define rmpentry_assigned(x)	((x)->info.assigned)
 #define rmpentry_pagesize(x)	((x)->info.pagesize)
+#define rmpentry_vmsa(x)	((x)->info.vmsa)
+#define rmpentry_asid(x)	((x)->info.asid)
+#define rmpentry_validated(x)	((x)->info.validated)
+#define rmpentry_gpa(x)		((unsigned long)(x)->info.gpa)
+#define rmpentry_immutable(x)	((x)->info.immutable)
 
 #define RMPADJUST_VMSA_PAGE_BIT		BIT(16)
 
@@ -213,6 +218,7 @@ void __init snp_prep_memory(unsigned long paddr, unsigned int sz, enum psc_op op
 void snp_set_memory_shared(unsigned long vaddr, unsigned int npages);
 void snp_set_memory_private(unsigned long vaddr, unsigned int npages);
 void snp_set_wakeup_secondary_cpu(void);
+void dump_rmpentry(u64 pfn);
 #ifdef __BOOT_COMPRESSED
 bool sev_snp_enabled(void);
 #else
@@ -245,6 +251,7 @@ static int snp_issue_guest_request(u64 exit_code, struct snp_guest_request_data 
 	return -ENOTTY;
 }
 static u64 snp_get_msg_seqno(void) { return 0; }
+static inline void dump_rmpentry(u64 pfn) {}
 #ifdef __BOOT_COMPRESSED
 static inline bool sev_snp_enabled { return false; }
 #else
