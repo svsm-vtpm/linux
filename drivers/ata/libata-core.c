@@ -2007,7 +2007,7 @@ unsigned int ata_read_log_page(struct ata_device *dev, u8 log,
 
 retry:
 	ata_tf_init(dev, &tf);
-	if (dev->dma_mode && ata_id_has_read_log_dma_ext(dev->id) &&
+	if (ata_dma_enabled(dev) && ata_id_has_read_log_dma_ext(dev->id) &&
 	    !(dev->horkage & ATA_HORKAGE_NO_DMA_LOG)) {
 		tf.command = ATA_CMD_READ_LOG_DMA_EXT;
 		tf.protocol = ATA_PROT_DMA;
@@ -2052,8 +2052,19 @@ static bool ata_identify_page_supported(struct ata_device *dev, u8 page)
 	struct ata_port *ap = dev->link->ap;
 	unsigned int err, i;
 
+	if (dev->horkage & ATA_HORKAGE_NO_ID_DEV_LOG)
+		return false;
+
 	if (!ata_log_supported(dev, ATA_LOG_IDENTIFY_DEVICE)) {
-		ata_dev_warn(dev, "ATA Identify Device Log not supported\n");
+		/*
+		 * IDENTIFY DEVICE data log is defined as mandatory starting
+		 * with ACS-3 (ATA version 10). Warn about the missing log
+		 * for drives which implement this ATA level or above.
+		 */
+		if (ata_id_major_version(dev->id) >= 10)
+			ata_dev_warn(dev,
+				"ATA Identify Device Log not supported\n");
+		dev->horkage |= ATA_HORKAGE_NO_ID_DEV_LOG;
 		return false;
 	}
 
