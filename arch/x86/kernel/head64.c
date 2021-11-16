@@ -588,6 +588,7 @@ void early_setup_idt(void)
 
 	bringup_idt_descr.address = (unsigned long)bringup_idt_table;
 	native_load_idt(&bringup_idt_descr);
+	sev_snp_register_ghcb();
 }
 
 /*
