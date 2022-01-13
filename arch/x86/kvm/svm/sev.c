@@ -3395,27 +3395,28 @@ static int __sev_snp_update_protected_guest_state(struct kvm_vcpu *vcpu)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
 	kvm_pfn_t pfn;
+	hpa_t cur_pa;
 
 	WARN_ON(!mutex_is_locked(&svm->snp_vmsa_mutex));
+
+	/* Save off the current value for later checks */
+	cur_pa = svm->vmsa_pa;
 
 	/* Mark the vCPU as offline and not runnable */
 	vcpu->arch.pv.pv_unhalted = false;
 	vcpu->arch.mp_state = KVM_MP_STATE_STOPPED;
 
-	/* Clear use of the VMSA in the sev_es_init_vmcb() path */
+	/* Clear use of the VMSA */
 	svm->vmsa_pa = INVALID_PAGE;
-
-	/* Clear use of the VMSA from the VMCB */
 	svm->vmcb->control.vmsa_pa = INVALID_PAGE;
 
-	if (VALID_PAGE(svm->snp_vmsa_pfn)) {
+	if (cur_pa != __pa(svm->vmsa) && VALID_PAGE(cur_pa)) {
 		/*
-		 * The snp_vmsa_pfn fields holds the hypervisor physical address
+		 * The svm->vmsa_pa field holds the hypervisor physical address
 		 * of the about to be replaced VMSA which will no longer be used
 		 * or referenced, so un-pin it.
 		 */
-		kvm_release_pfn_dirty(svm->snp_vmsa_pfn);
-		svm->snp_vmsa_pfn = INVALID_PAGE;
+		kvm_release_pfn_dirty(__phys_to_pfn(cur_pa));
 	}
 
 	if (VALID_PAGE(svm->snp_vmsa_gpa)) {
@@ -3427,15 +3428,15 @@ static int __sev_snp_update_protected_guest_state(struct kvm_vcpu *vcpu)
 		if (is_error_pfn(pfn))
 			return -EINVAL;
 
-		svm->snp_vmsa_pfn = pfn;
-
-		/* Use the new VMSA in the sev_es_init_vmcb() path */
+		/* Use the new VMSA */
 		svm->vmsa_pa = pfn_to_hpa(pfn);
 		svm->vmcb->control.vmsa_pa = svm->vmsa_pa;
 
 		/* Mark the vCPU as runnable */
 		vcpu->arch.pv.pv_unhalted = false;
 		vcpu->arch.mp_state = KVM_MP_STATE_RUNNABLE;
+
+		svm->snp_vmsa_gpa = INVALID_PAGE;
 	}
 
 	vmcb_mark_all_dirty(svm->vmcb);
@@ -3926,7 +3927,6 @@ void sev_es_create_vcpu(struct vcpu_svm *svm)
 					    sev_enc_bit));
 
 	mutex_init(&svm->snp_vmsa_mutex);
-	svm->snp_vmsa_pfn = INVALID_PAGE;
 }
 
 void sev_es_prepare_guest_switch(struct vcpu_svm *svm, unsigned int cpu)
