@@ -109,7 +109,7 @@ efi_get_system_table(struct boot_params *boot_params,
 		efi_64 = false;
 	} else {
 		debug_putstr("Wrong EFI loader signature.\n");
-		return -ENOENT;
+		return -EOPNOTSUPP;
 	}
 
 	/* Get systab from boot params. */
@@ -118,7 +118,7 @@ efi_get_system_table(struct boot_params *boot_params,
 #else
 	if (ei->efi_systab_hi || ei->efi_memmap_hi) {
 		debug_putstr("Error: EFI system table located above 4GB.\n");
-		return -EINVAL;
+		return -EOPNOTSUPP;
 	}
 	sys_table = ei->efi_systab;
 #endif

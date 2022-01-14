@@ -83,6 +83,8 @@ static acpi_physical_address kexec_get_rsdp_addr(void)
 
 	/* Get systab from boot params. */
 	ret = efi_get_system_table(boot_params, (unsigned long *)&systab, &efi_64);
+	if (ret == -EOPNOTSUPP)
+		return 0;
 	if (ret)
 		error("EFI system table not found in kexec boot_params.");
 
@@ -107,6 +109,8 @@ static acpi_physical_address efi_get_rsdp_addr(void)
 
 	ret = efi_get_conf_table(boot_params, &config_table_pa,
 				 &config_table_len, &efi_64);
+	if (ret == -EOPNOTSUPP)
+		return 0;
 	if (ret || !config_table_pa)
 		error("EFI config table not found.");
 
