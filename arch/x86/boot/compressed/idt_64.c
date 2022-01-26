@@ -39,7 +39,15 @@ void load_stage1_idt(void)
 	load_boot_idt(&boot_idt_desc);
 }
 
-/* Setup IDT after kernel jumping to  .Lrelocated */
+/*
+ * Setup IDT after kernel jumping to  .Lrelocated
+ *
+ * initialize_identity_maps() needs a PF handler setup. The PF handler setup
+ * needs to happen in load_stage2_idt() where the IDT is loaded and there the
+ * VC IDT entry gets setup too in order to handle VCs, one needs a GHCB which
+ * gets setup with an already setup table which is done in
+ * initialize_identity_maps() and this is where the circle is complete.
+ */
 void load_stage2_idt(void)
 {
 	boot_idt_desc.address = (unsigned long)boot_idt;
