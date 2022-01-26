@@ -143,7 +143,21 @@ static unsigned long sme_postprocess_startup(struct boot_params *bp, pmdval_t *p
 	if (sme_get_me_mask()) {
 		vaddr = (unsigned long)__start_bss_decrypted;
 		vaddr_end = (unsigned long)__end_bss_decrypted;
+
 		for (; vaddr < vaddr_end; vaddr += PMD_SIZE) {
+			/*
+			 * When SEV-SNP is active then transition the page to
+			 * shared in the RMP table so that it is consistent with
+			 * the page table attribute change.
+			 *
+			 * At this point, kernel is running in identity mapped mode.
+			 * The __start_bss_decrypted is a regular kernel address. The
+			 * early_snp_set_memory_shared() requires a valid virtual
+			 * address, so use __pa() against __start_bss_decrypted to
+			 * get valid virtual address.
+			 */
+			early_snp_set_memory_shared(__pa(vaddr), __pa(vaddr), PTRS_PER_PMD);
+
 			i = pmd_index(vaddr);
 			pmd[i] -= sme_get_me_mask();
 		}
