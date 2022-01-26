@@ -426,6 +426,43 @@ found_cc_info:
 	return cc_info;
 }
 
+/*
+ * Initialize the kernel's copy of the SEV-SNP CPUID table, and set up the
+ * pointer that will be used to access it.
+ *
+ * Maintaining a direct mapping of the SEV-SNP CPUID table used by firmware
+ * would be possible as an alternative, but the approach is brittle since the
+ * mapping needs to be updated in sync with all the changes to virtual memory
+ * layout and related mapping facilities throughout the boot process.
+ */
+static void snp_setup_cpuid_table(const struct cc_blob_sev_info *cc_info)
+{
+	const struct snp_cpuid_info *cpuid_info_fw, *cpuid_info;
+	int i;
+
+	if (!cc_info || !cc_info->cpuid_phys || cc_info->cpuid_len < PAGE_SIZE)
+		sev_es_terminate(SEV_TERM_SET_LINUX, GHCB_TERM_CPUID);
+
+	cpuid_info_fw = (const struct snp_cpuid_info *)cc_info->cpuid_phys;
+	if (!cpuid_info_fw->count || cpuid_info_fw->count > SNP_CPUID_COUNT_MAX)
+		sev_es_terminate(SEV_TERM_SET_LINUX, GHCB_TERM_CPUID);
+
+	cpuid_info = snp_cpuid_info_get_ptr();
+	memcpy((void *)cpuid_info, cpuid_info_fw, sizeof(*cpuid_info));
+
+	/* Initialize CPUID ranges for range-checking. */
+	for (i = 0; i < cpuid_info->count; i++) {
+		const struct snp_cpuid_fn *fn = &cpuid_info->fn[i];
+
+		if (fn->eax_in == 0x0)
+			cpuid_std_range_max = fn->eax;
+		else if (fn->eax_in == 0x40000000)
+			cpuid_hyp_range_max = fn->eax;
+		else if (fn->eax_in == 0x80000000)
+			cpuid_ext_range_max = fn->eax;
+	}
+}
+
 bool snp_init(struct boot_params *bp)
 {
 	struct cc_blob_sev_info *cc_info;
@@ -436,6 +473,15 @@ bool snp_init(struct boot_params *bp)
 	cc_info = snp_find_cc_blob(bp);
 	if (!cc_info)
 		return false;
+
+	/*
+	 * If a SEV-SNP-specific Confidential Computing blob is present, then
+	 * firmware/bootloader have indicated SEV-SNP support. Verifying this
+	 * involves CPUID checks which will be more reliable if the SEV-SNP
+	 * CPUID table is used. See comments over snp_setup_cpuid_table() for
+	 * more details.
+	 */
+	snp_setup_cpuid_table(cc_info);
 
 	/*
 	 * Pass run-time kernel a pointer to CC info via boot_params so EFI
