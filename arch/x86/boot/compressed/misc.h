@@ -23,6 +23,7 @@
 #include <linux/screen_info.h>
 #include <linux/elf.h>
 #include <linux/io.h>
+#include <linux/efi.h>
 #include <asm/page.h>
 #include <asm/boot.h>
 #include <asm/bootparam.h>
@@ -188,6 +189,10 @@ enum efi_type efi_get_type(struct boot_params *boot_params);
 unsigned long efi_get_system_table(struct boot_params *boot_params);
 int efi_get_conf_table(struct boot_params *boot_params, unsigned long *cfg_tbl_pa,
 		       unsigned int *cfg_tbl_len);
+unsigned long efi_find_vendor_table(struct boot_params *boot_params,
+				    unsigned long cfg_tbl_pa,
+				    unsigned int cfg_tbl_len,
+				    efi_guid_t guid);
 #else
 static inline enum efi_type efi_get_type(struct boot_params *boot_params)
 {
@@ -204,6 +209,14 @@ static inline int efi_get_conf_table(struct boot_params *boot_params,
 				     unsigned int *cfg_tbl_len)
 {
 	return -ENOENT;
+}
+
+static inline unsigned long efi_find_vendor_table(struct boot_params *boot_params,
+						  unsigned long cfg_tbl_pa,
+						  unsigned int cfg_tbl_len,
+						  efi_guid_t guid)
+{
+	return 0;
 }
 #endif /* CONFIG_EFI */
 
