@@ -2034,6 +2034,8 @@ bool __init snp_init(struct boot_params *bp)
 	if (!cc_info)
 		return false;
 
+	snp_setup_cpuid_table(cc_info);
+
 	/*
 	 * The CC blob will be used later to access the secrets page. Cache
 	 * it here like the boot kernel does.
@@ -2047,3 +2049,76 @@ void __init snp_abort(void)
 {
 	sev_es_terminate(SEV_TERM_SET_GEN, GHCB_SNP_UNSUPPORTED);
 }
+
+static void snp_dump_cpuid_table(void)
+{
+	const struct snp_cpuid_info *cpuid_info = snp_cpuid_info_get_ptr();
+	int i = 0;
+
+	pr_info("count=%d reserved=0x%x reserved2=0x%llx\n",
+		cpuid_info->count, cpuid_info->__reserved1, cpuid_info->__reserved2);
+
+	for (i = 0; i < SNP_CPUID_COUNT_MAX; i++) {
+		const struct snp_cpuid_fn *fn = &cpuid_info->fn[i];
+
+		pr_info("index=%03d fn=0x%08x subfn=0x%08x: eax=0x%08x ebx=0x%08x ecx=0x%08x edx=0x%08x xcr0_in=0x%016llx xss_in=0x%016llx reserved=0x%016llx\n",
+			i, fn->eax_in, fn->ecx_in, fn->eax, fn->ebx, fn->ecx,
+			fn->edx, fn->xcr0_in, fn->xss_in, fn->__reserved);
+	}
+}
+
+/*
+ * It is useful from an auditing/testing perspective to provide an easy way
+ * for the guest owner to know that the CPUID table has been initialized as
+ * expected, but that initialization happens too early in boot to print any
+ * sort of indicator, and there's not really any other good place to do it.
+ * So do it here. This is also a good place to flag unexpected usage of the
+ * CPUID table that does not violate the SNP specification, but may still
+ * be worth noting to the user.
+ */
+static int __init snp_check_cpuid_table(void)
+{
+	const struct snp_cpuid_info *cpuid_info = snp_cpuid_info_get_ptr();
+	bool dump_table = false;
+	int i;
+
+	if (!cpuid_info->count)
+		return 0;
+
+	pr_info("Using SEV-SNP CPUID table, %d entries present.\n",
+		cpuid_info->count);
+
+	if (cpuid_info->__reserved1 || cpuid_info->__reserved2) {
+		pr_warn("Unexpected use of reserved fields in CPUID table header.\n");
+		dump_table = true;
+	}
+
+	for (i = 0; i < cpuid_info->count; i++) {
+		const struct snp_cpuid_fn *fn = &cpuid_info->fn[i];
+		struct snp_cpuid_fn zero_fn = {0};
+
+		/*
+		 * Though allowed, an all-zero entry is not a valid leaf for linux
+		 * guests, and likely the result of an incorrect entry count.
+		 */
+		if (!memcmp(fn, &zero_fn, sizeof(struct snp_cpuid_fn))) {
+			pr_warn("CPUID table contains all-zero entry at index=%d\n", i);
+			dump_table = true;
+		}
+
+		if (fn->__reserved) {
+			pr_warn("Unexpected use of reserved fields in CPUID table entry at index=%d\n",
+				i);
+			dump_table = true;
+		}
+	}
+
+	if (dump_table) {
+		pr_warn("Dumping CPUID table:\n");
+		snp_dump_cpuid_table();
+	}
+
+	return 0;
+}
+
+arch_initcall(snp_check_cpuid_table);
