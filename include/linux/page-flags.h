@@ -871,6 +871,18 @@ static __always_inline void __ClearPage##uname(struct page *page)	\
 	page->page_type |= PG_##lname;					\
 }
 
+#define PAGE_TYPE_OPS_FALSE(uname)					\
+static __always_inline int Page##uname(struct page *page)		\
+{									\
+	return false;							\
+}									\
+static __always_inline void __SetPage##uname(struct page *page)		\
+{									\
+}									\
+static __always_inline void __ClearPage##uname(struct page *page)	\
+{									\
+}
+
 /*
  * PageBuddy() indicates that the page is free and in the buddy system
  * (see mm/page_alloc.c).
@@ -900,6 +912,21 @@ PAGE_TYPE_OPS(Buddy, buddy)
  * page_offline_freeze()/page_offline_thaw().
  */
 PAGE_TYPE_OPS(Offline, offline)
+
+ /*
+  * PageBuddyUnaccepted() indicates that the page has to be "accepted" before
+  * it can be used. Page allocator has to call accept_page() before returning
+  * the page to the caller.
+  *
+  * PageBuddyUnaccepted() encoded with the same bit as PageOffline().
+  * PageOffline() pages are never on free list of buddy allocator, so there's
+  * not conflict.
+  */
+#ifdef CONFIG_UNACCEPTED_MEMORY
+PAGE_TYPE_OPS(BuddyUnaccepted, offline)
+#else
+PAGE_TYPE_OPS_FALSE(BuddyUnaccepted)
+#endif
 
 extern void page_offline_freeze(void);
 extern void page_offline_thaw(void);
