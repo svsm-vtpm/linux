@@ -630,9 +630,9 @@ enum {
  * @page_type: encoded page type
  * @page_size: page size 0 indicates 4K and 1 indicates 2MB page
  * @address: system physical address of destination page to encrypt
- * @vmpl3_perms: VMPL permission mask for VMPL3
- * @vmpl2_perms: VMPL permission mask for VMPL2
  * @vmpl1_perms: VMPL permission mask for VMPL1
+ * @vmpl2_perms: VMPL permission mask for VMPL2
+ * @vmpl3_perms: VMPL permission mask for VMPL3
  */
 struct sev_data_snp_launch_update {
 	u64 gctx_paddr;				/* In */
@@ -643,9 +643,9 @@ struct sev_data_snp_launch_update {
 	u32 rsvd2;
 	u64 address;				/* In */
 	u32 rsvd3:8;
-	u32 vmpl3_perms:8;			/* In */
-	u32 vmpl2_perms:8;			/* In */
 	u32 vmpl1_perms:8;			/* In */
+	u32 vmpl2_perms:8;			/* In */
+	u32 vmpl3_perms:8;			/* In */
 	u32 rsvd4;
 } __packed;
 
