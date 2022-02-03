@@ -225,6 +225,15 @@ struct __attribute__ ((__packed__)) vmcb_control_area {
 	(SVM_SEV_FEAT_RESTRICTED_INJECTION |	\
 	 SVM_SEV_FEAT_ALTERNATE_INJECTION)
 
+enum {
+	SVM_SEV_VMPL0 = 0,
+	SVM_SEV_VMPL1,
+	SVM_SEV_VMPL2,
+	SVM_SEV_VMPL3,
+
+	SVM_SEV_VMPL_MAX
+};
+
 struct vmcb_seg {
 	u16 selector;
 	u16 attrib;

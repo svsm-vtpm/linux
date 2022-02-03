@@ -1381,7 +1381,7 @@ static int svm_create_vcpu(struct kvm_vcpu *vcpu)
 		 * Do not include the encryption mask on the VMSA physical
 		 * address since hardware will access it using the guest key.
 		 */
-		svm->vmsa_pa = __pa(svm->vmsa);
+		svm->vmsa_pa[SVM_SEV_VMPL0] = __pa(svm->vmsa);
 	}
 
 	svm->guest_state_loaded = false;
