@@ -35,7 +35,7 @@
 
 /* Minimum firmware version required for the SEV-SNP support */
 #define SNP_MIN_API_MAJOR	1
-#define SNP_MIN_API_MINOR	30
+#define SNP_MIN_API_MINOR	51
 
 static DEFINE_MUTEX(sev_cmd_mutex);
 static struct sev_misc_dev *misc_dev;
