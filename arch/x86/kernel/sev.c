@@ -112,6 +112,13 @@ DEFINE_STATIC_KEY_FALSE(sev_es_enable_key);
 
 static DEFINE_PER_CPU(struct sev_es_save_area *, sev_vmsa);
 
+struct sev_config {
+	__u64 debug		: 1,
+	      __reserved	: 63;
+};
+
+static struct sev_config sev_cfg __read_mostly;
+
 static __always_inline bool on_vc_stack(struct pt_regs *regs)
 {
 	unsigned long sp = regs->sp;
@@ -2045,6 +2052,23 @@ void __init snp_abort(void)
 	sev_es_terminate(SEV_TERM_SET_GEN, GHCB_SNP_UNSUPPORTED);
 }
 
+static void dump_cpuid_table(void)
+{
+	const struct snp_cpuid_table *cpuid_table = snp_cpuid_get_table();
+	int i = 0;
+
+	pr_info("count=%d reserved=0x%x reserved2=0x%llx\n",
+		cpuid_table->count, cpuid_table->__reserved1, cpuid_table->__reserved2);
+
+	for (i = 0; i < SNP_CPUID_COUNT_MAX; i++) {
+		const struct snp_cpuid_fn *fn = &cpuid_table->fn[i];
+
+		pr_info("index=%3d fn=0x%08x subfn=0x%08x: eax=0x%08x ebx=0x%08x ecx=0x%08x edx=0x%08x xcr0_in=0x%016llx xss_in=0x%016llx reserved=0x%016llx\n",
+			i, fn->eax_in, fn->ecx_in, fn->eax, fn->ebx, fn->ecx,
+			fn->edx, fn->xcr0_in, fn->xss_in, fn->__reserved);
+	}
+}
+
 /*
  * It is useful from an auditing/testing perspective to provide an easy way
  * for the guest owner to know that the CPUID table has been initialized as
@@ -2062,6 +2086,40 @@ static int __init report_cpuid_table(void)
 	pr_info("Using SNP CPUID table, %d entries present.\n",
 		cpuid_table->count);
 
+	if (sev_cfg.debug)
+		dump_cpuid_table();
+
 	return 0;
 }
 arch_initcall(report_cpuid_table);
+
+static bool matches_option(const char *option, const char *arg, int arg_len)
+{
+	return strncmp(option, arg, max(arg_len, (int)strlen(option))) == 0;
+}
+
+static int __init init_sev_config(char *str)
+{
+	if ((*str) == '=')
+		str++;
+
+	while (*str) {
+		char *arg = str;
+		int arg_len;
+
+		while (*str && *str != ',')
+			str++;
+
+		arg_len = str - arg;
+		if (*str == ',')
+			str++;
+
+		if (matches_option("debug", arg, arg_len))
+			sev_cfg.debug = true;
+		else
+			pr_info("SEV command-line option '%.*s' was not recognized\n", arg_len, arg);
+	}
+
+	return 1;
+}
+__setup("sev", init_sev_config);
