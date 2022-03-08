@@ -3438,6 +3438,8 @@ static int __sev_snp_update_protected_guest_state(struct kvm_vcpu *vcpu)
 		vcpu->arch.mp_state = KVM_MP_STATE_RUNNABLE;
 	}
 
+	vmcb_mark_all_dirty(svm->vmcb);
+
 	return 0;
 }
 
