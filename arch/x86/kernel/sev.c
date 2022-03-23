@@ -69,6 +69,8 @@ static struct ghcb *boot_ghcb __section(".data");
 /* Bitmap of SEV features supported by the hypervisor */
 static u64 sev_hv_features __ro_after_init;
 
+static bool ghcb_is_setup __section(".data") = 0;
+
 /* #VC handler runtime per-CPU data */
 struct sev_es_runtime_data {
 	struct ghcb ghcb_page;
@@ -605,7 +607,7 @@ static void pvalidate_pages(unsigned long vaddr, unsigned int npages, bool valid
 	}
 }
 
-static void __init early_set_pages_state(unsigned long paddr, unsigned int npages, enum psc_op op)
+static void vmgexit_psc_msr(unsigned long paddr, unsigned int npages, enum psc_op op)
 {
 	unsigned long paddr_end;
 	u64 val;
@@ -653,7 +655,7 @@ void __init early_snp_set_memory_private(unsigned long vaddr, unsigned long padd
 	  * Ask the hypervisor to mark the memory pages as private in the RMP
 	  * table.
 	  */
-	early_set_pages_state(paddr, npages, SNP_PAGE_STATE_PRIVATE);
+	vmgexit_psc_msr(paddr, npages, SNP_PAGE_STATE_PRIVATE);
 
 	/* Validate the memory pages after they've been added in the RMP table. */
 	pvalidate_pages(vaddr, npages, true);
@@ -669,7 +671,7 @@ void __init early_snp_set_memory_shared(unsigned long vaddr, unsigned long paddr
 	pvalidate_pages(vaddr, npages, false);
 
 	 /* Ask hypervisor to mark the memory pages shared in the RMP table. */
-	early_set_pages_state(paddr, npages, SNP_PAGE_STATE_SHARED);
+	vmgexit_psc_msr(paddr, npages, SNP_PAGE_STATE_SHARED);
 }
 
 void __init snp_prep_memory(unsigned long paddr, unsigned int sz, enum psc_op op)
@@ -853,6 +855,25 @@ void snp_set_memory_private(unsigned long vaddr, unsigned int npages)
 	set_pages_state(vaddr, npages, SNP_PAGE_STATE_PRIVATE);
 
 	pvalidate_pages(vaddr, npages, true);
+}
+
+void snp_accept_memory(phys_addr_t start, phys_addr_t end)
+{
+	unsigned long vaddr;
+	unsigned int npages;
+
+	if (!cc_platform_has(CC_ATTR_GUEST_SEV_SNP))
+		return;
+
+	vaddr = (unsigned long)__va(start);
+	npages = (end - start) >> PAGE_SHIFT;
+
+	if (ghcb_is_setup) {
+		vmgexit_psc_msr(start, npages, SNP_PAGE_STATE_PRIVATE);
+		pvalidate_pages(vaddr, npages, true);
+	} else {
+		snp_set_memory_private(vaddr, npages);
+	}
 }
 
 static int snp_set_vmsa(void *va, bool vmsa)
@@ -1217,6 +1238,8 @@ void setup_ghcb(void)
 	/* SNP guest requires that GHCB GPA must be registered. */
 	if (cc_platform_has(CC_ATTR_GUEST_SEV_SNP))
 		snp_register_ghcb_early(__pa(&boot_ghcb_page));
+
+	ghcb_is_setup = true;
 }
 
 #ifdef CONFIG_HOTPLUG_CPU

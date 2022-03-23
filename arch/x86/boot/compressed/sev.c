@@ -117,7 +117,7 @@ static enum es_result vc_read_mem(struct es_em_ctxt *ctxt,
 /* Include code for early handlers */
 #include "../../kernel/sev-shared.c"
 
-static inline bool sev_snp_enabled(void)
+bool sev_snp_enabled(void)
 {
 	return sev_status & MSR_AMD64_SEV_SNP_ENABLED;
 }
@@ -161,6 +161,14 @@ void snp_set_page_private(unsigned long paddr)
 void snp_set_page_shared(unsigned long paddr)
 {
 	__page_state_change(paddr, SNP_PAGE_STATE_SHARED);
+}
+
+void snp_set_range_private(phys_addr_t start, phys_addr_t end)
+{
+	while (end > start) {
+		snp_set_page_private(start);
+		start += PAGE_SIZE;
+	}
 }
 
 static bool early_setup_ghcb(void)
