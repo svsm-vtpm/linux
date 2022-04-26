@@ -219,6 +219,11 @@ struct vcpu_sev_es_state {
 	u64 ghcb_sw_exit_info_2;
 
 	u64 ghcb_registered_gpa;
+
+	struct mutex snp_vmsa_mutex;
+	gpa_t snp_vmsa_gpa;
+	kvm_pfn_t snp_vmsa_pfn;
+	bool snp_vmsa_update_on_init;	/* SEV-SNP AP Creation on INIT-SIPI */
 };
 
 struct vcpu_svm {
