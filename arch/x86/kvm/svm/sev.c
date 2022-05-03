@@ -2839,19 +2839,22 @@ void sev_free_vcpu(struct kvm_vcpu *vcpu)
 
 	svm = to_svm(vcpu);
 
-	if (vcpu->arch.guest_state_protected)
-		sev_flush_encrypted_page(vcpu, svm->sev_es.vmsa);
-
 	/*
 	 * If its an SNP guest, then VMSA was added in the RMP entry as
 	 * a guest owned page. Transition the page to hyperivosr state
 	 * before releasing it back to the system.
+	 * Also the page is removed from the kernel direct map, so flush it
+	 * later after it is transitioned back to hypervisor state and
+	 * restored in the direct map.
 	 */
 	if (sev_snp_guest(vcpu->kvm)) {
 		u64 pfn = __pa(svm->sev_es.vmsa) >> PAGE_SHIFT;
 		if (host_rmp_make_shared(pfn, PG_LEVEL_4K, false))
 			goto skip_vmsa_free;
 	}
+
+	if (vcpu->arch.guest_state_protected)
+		sev_flush_encrypted_page(vcpu, svm->sev_es.vmsa);
 
 	__free_page(virt_to_page(svm->sev_es.vmsa));
 
