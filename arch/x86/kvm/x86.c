@@ -9587,13 +9587,9 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 			static_call(kvm_x86_update_cpu_dirty_logging)(vcpu);
 
 		if (kvm_check_request(KVM_REQ_UPDATE_PROTECTED_GUEST_STATE, vcpu)) {
-			r = static_call(kvm_x86_update_protected_guest_state)(vcpu);
-			if (!r) {
-				vcpu->run->exit_reason = KVM_EXIT_INTERNAL_ERROR;
+			kvm_vcpu_reset(vcpu, true);
+			if (vcpu->arch.mp_state != KVM_MP_STATE_RUNNABLE)
 				goto out;
-			} else if (vcpu->arch.mp_state != KVM_MP_STATE_RUNNABLE) {
-				goto out;
-			}
 		}
 	}
 

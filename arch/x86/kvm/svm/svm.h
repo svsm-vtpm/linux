@@ -226,7 +226,7 @@ struct vcpu_svm {
 
 	struct mutex snp_vmsa_mutex;
 	gpa_t snp_vmsa_gpa;
-	bool snp_vmsa_update_on_init;	/* SEV-SNP AP Creation on INIT-SIPI */
+	bool snp_ap_create;
 };
 
 struct svm_cpu_data {

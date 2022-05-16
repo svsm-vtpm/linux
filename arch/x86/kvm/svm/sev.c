@@ -3445,28 +3445,6 @@ static int __sev_snp_update_protected_guest_state(struct kvm_vcpu *vcpu)
 }
 
 /*
- * Invoked as part of vcpu_enter_guest() event processing.
- * Expected return values are:
- *   0 - exit to userspace
- *   1 - continue vcpu_run() execution loop
- */
-int sev_snp_update_protected_guest_state(struct kvm_vcpu *vcpu)
-{
-	struct vcpu_svm *svm = to_svm(vcpu);
-	int ret;
-
-	mutex_lock(&svm->snp_vmsa_mutex);
-
-	ret = __sev_snp_update_protected_guest_state(vcpu);
-	if (ret)
-		vcpu_unimpl(vcpu, "snp: AP state update failed\n");
-
-	mutex_unlock(&svm->snp_vmsa_mutex);
-
-	return ret ? 0 : 1;
-}
-
-/*
  * Invoked as part of svm_vcpu_reset() processing of an init event.
  */
 void sev_snp_init_protected_guest_state(struct kvm_vcpu *vcpu)
@@ -3479,10 +3457,10 @@ void sev_snp_init_protected_guest_state(struct kvm_vcpu *vcpu)
 
 	mutex_lock(&svm->snp_vmsa_mutex);
 
-	if (!svm->snp_vmsa_update_on_init)
+	if (!svm->snp_ap_create)
 		goto unlock;
 
-	svm->snp_vmsa_update_on_init = false;
+	svm->snp_ap_create = false;
 
 	ret = __sev_snp_update_protected_guest_state(vcpu);
 	if (ret)
@@ -3527,8 +3505,8 @@ static int sev_snp_ap_creation(struct vcpu_svm *svm)
 
 	mutex_lock(&target_svm->snp_vmsa_mutex);
 
+	target_svm->snp_ap_create = true;
 	target_svm->snp_vmsa_gpa = INVALID_PAGE;
-	target_svm->snp_vmsa_update_on_init = false;
 
 	/* Interrupt injection mode shouldn't change for AP creation */
 	if (request < SVM_VMGEXIT_AP_DESTROY) {
@@ -3547,7 +3525,6 @@ static int sev_snp_ap_creation(struct vcpu_svm *svm)
 	switch (request) {
 	case SVM_VMGEXIT_AP_CREATE_ON_INIT:
 		kick = false;
-		target_svm->snp_vmsa_update_on_init = true;
 		fallthrough;
 	case SVM_VMGEXIT_AP_CREATE:
 		if (!page_address_valid(vcpu, svm->vmcb->control.exit_info_2)) {

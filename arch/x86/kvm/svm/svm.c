@@ -4736,8 +4736,6 @@ static struct kvm_x86_ops svm_x86_ops __initdata = {
 
 	.post_map_gfn = sev_post_map_gfn,
 	.post_unmap_gfn = sev_post_unmap_gfn,
-
-	.update_protected_guest_state = sev_snp_update_protected_guest_state,
 };
 
 static struct kvm_x86_init_ops svm_init_ops __initdata = {
