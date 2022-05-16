@@ -193,7 +193,7 @@ module_param(vgif, int, 0444);
 static bool avic;
 module_param(avic, bool, 0444);
 
-bool __read_mostly dump_invalid_vmcb = true;
+bool __read_mostly dump_invalid_vmcb;
 module_param(dump_invalid_vmcb, bool, 0644);
 
 
