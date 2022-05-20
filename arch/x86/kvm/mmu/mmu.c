@@ -4156,10 +4156,14 @@ bool kvm_mmu_get_tdp_walk(struct kvm_vcpu *vcpu, gpa_t gpa, kvm_pfn_t *pfn, int 
 	u64 sptes[PT64_ROOT_MAX_LEVEL + 1];
 	int leaf, root;
 
+	walk_shadow_page_lockless_begin(vcpu);
+
 	if (is_tdp_mmu(vcpu->arch.mmu))
 		leaf = kvm_tdp_mmu_get_walk(vcpu, gpa, sptes, &root);
 	else
 		leaf = get_walk(vcpu, gpa, sptes, &root);
+
+	walk_shadow_page_lockless_end(vcpu);
 
 	if (unlikely(leaf < 0))
 		return false;
