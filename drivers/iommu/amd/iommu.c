@@ -2068,6 +2068,14 @@ static struct iommu_domain *amd_iommu_domain_alloc(unsigned type)
 {
 	struct protection_domain *domain;
 
+	/*
+	 * Since DTE[Mode]=0 is prohibited on SNP-enabled system,
+	 * default to use IOMMU_DOMAIN_DMA[_FQ].
+	 */
+	if (WARN_ONCE(amd_iommu_snp_en && (type == IOMMU_DOMAIN_IDENTITY),
+		      "Cannot allocate identity domain due to SNP\n"))
+		return NULL;
+
 	domain = protection_domain_alloc(type);
 	if (!domain)
 		return NULL;
