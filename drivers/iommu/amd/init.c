@@ -2018,7 +2018,6 @@ static void __init late_iommu_features_init(struct amd_iommu *iommu)
 static int __init iommu_init_pci(struct amd_iommu *iommu)
 {
 	int cap_ptr = iommu->cap_ptr;
-	int ret;
 
 	iommu->dev = pci_get_domain_bus_and_slot(iommu->pci_seg->id,
 						 PCI_BUS_NUM(iommu->devid),
@@ -2067,10 +2066,6 @@ static int __init iommu_init_pci(struct amd_iommu *iommu)
 
 	if (iommu_feature(iommu, FEATURE_PPR) && alloc_ppr_log(iommu))
 		return -ENOMEM;
-
-	ret = iommu_init_ga_log(iommu);
-	if (ret)
-		return ret;
 
 	if (iommu->cap & (1UL << IOMMU_CAP_NPCACHE)) {
 		pr_info("Using strict mode due to virtualization\n");
@@ -2152,8 +2147,6 @@ static void print_iommu_info(void)
 	}
 	if (irq_remapping_enabled) {
 		pr_info("Interrupt remapping enabled\n");
-		if (AMD_IOMMU_GUEST_IR_VAPIC(amd_iommu_guest_ir))
-			pr_info("Virtual APIC enabled\n");
 		if (amd_iommu_xt_mode == IRQ_REMAP_X2APIC_MODE)
 			pr_info("X2APIC enabled\n");
 	}
@@ -2443,9 +2436,6 @@ enable_faults:
 
 	if (iommu->ppr_log != NULL)
 		iommu_feature_enable(iommu, CONTROL_PPRINT_EN);
-
-	iommu_ga_log_enable(iommu);
-
 	return 0;
 }
 
@@ -2675,8 +2665,6 @@ static void iommu_enable_ga(struct amd_iommu *iommu)
 #ifdef CONFIG_IRQ_REMAP
 	switch (amd_iommu_guest_ir) {
 	case AMD_IOMMU_GUEST_IR_VAPIC:
-		iommu_feature_enable(iommu, CONTROL_GAM_EN);
-		fallthrough;
 	case AMD_IOMMU_GUEST_IR_LEGACY_GA:
 		iommu_feature_enable(iommu, CONTROL_GA_EN);
 		iommu->irte_ops = &irte_128_ops;
@@ -2756,19 +2744,6 @@ static void early_enable_iommus(void)
 			iommu_flush_all_caches(iommu);
 		}
 	}
-
-#ifdef CONFIG_IRQ_REMAP
-	/*
-	 * Note: We have already checked GASup from IVRS table.
-	 *       Now, we need to make sure that GAMSup is set.
-	 */
-	if (AMD_IOMMU_GUEST_IR_VAPIC(amd_iommu_guest_ir) &&
-	    !check_feature_on_all_iommus(FEATURE_GAM_VAPIC))
-		amd_iommu_guest_ir = AMD_IOMMU_GUEST_IR_LEGACY_GA;
-
-	if (AMD_IOMMU_GUEST_IR_VAPIC(amd_iommu_guest_ir))
-		amd_iommu_irq_ops.capability |= (1 << IRQ_POSTING_CAP);
-#endif
 }
 
 static void enable_iommus_v2(void)
@@ -2781,10 +2756,43 @@ static void enable_iommus_v2(void)
 	}
 }
 
+static void enable_iommus_vapic(void)
+{
+#ifdef CONFIG_IRQ_REMAP
+	struct amd_iommu *iommu;
+
+	if (AMD_IOMMU_GUEST_IR_VAPIC(amd_iommu_guest_ir) &&
+	    !check_feature_on_all_iommus(FEATURE_GAM_VAPIC)) {
+		amd_iommu_guest_ir = AMD_IOMMU_GUEST_IR_LEGACY_GA;
+		return;
+	}
+
+	if (amd_iommu_snp_en &&
+	    !FEATURE_SNPAVICSUP_GAM(amd_iommu_efr2)) {
+		pr_warn("Force to disable Virtual APIC due to SNP\n");
+		amd_iommu_guest_ir = AMD_IOMMU_GUEST_IR_LEGACY_GA;
+		return;
+	}
+
+	/* Enabling GAM and SNPAVIC support */
+	for_each_iommu(iommu) {
+		if (iommu_init_ga_log(iommu) || iommu_ga_log_enable(iommu))
+			return;
+
+		iommu_feature_enable(iommu, CONTROL_GAM_EN);
+		if (amd_iommu_snp_en)
+			iommu_feature_enable(iommu, CONTROL_SNPAVIC_EN);
+	}
+
+	amd_iommu_irq_ops.capability |= (1 << IRQ_POSTING_CAP);
+	pr_info("Virtual APIC enabled\n");
+#endif
+}
+
 static void enable_iommus(void)
 {
 	early_enable_iommus();
-
+	enable_iommus_vapic();
 	enable_iommus_v2();
 }
 
@@ -3123,6 +3131,7 @@ static int __init state_next(void)
 		register_syscore_ops(&amd_iommu_syscore_ops);
 		ret = amd_iommu_init_pci();
 		init_state = ret ? IOMMU_INIT_ERROR : IOMMU_PCI_INIT;
+		enable_iommus_vapic();
 		enable_iommus_v2();
 		break;
 	case IOMMU_PCI_INIT:
