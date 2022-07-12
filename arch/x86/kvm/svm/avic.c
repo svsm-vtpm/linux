@@ -158,6 +158,10 @@ int avic_vm_init(struct kvm *kvm)
 	hash_add(svm_vm_data_hash, &kvm_svm->hnode, kvm_svm->avic_vm_id);
 	spin_unlock_irqrestore(&svm_vm_data_hash_lock, flags);
 
+	/* AVIC cannot be supported on SNP-enabled system. */
+	if (cpu_feature_enabled(X86_FEATURE_SEV_SNP))
+		kvm_set_apicv_inhibit(kvm, APICV_INHIBIT_REASON_SNP);
+
 	return 0;
 
 free_avic:
@@ -909,6 +913,7 @@ bool avic_check_apicv_inhibit_reasons(enum kvm_apicv_inhibit reason)
 			  BIT(APICV_INHIBIT_REASON_X2APIC) |
 			  BIT(APICV_INHIBIT_REASON_BLOCKIRQ) |
 			  BIT(APICV_INHIBIT_REASON_SEV)      |
+			  BIT(APICV_INHIBIT_REASON_SNP)      |
 			  BIT(APICV_INHIBIT_REASON_APIC_ID_MODIFIED) |
 			  BIT(APICV_INHIBIT_REASON_APIC_BASE_MODIFIED);
 
