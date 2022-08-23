@@ -3525,6 +3525,7 @@ static int __snp_handle_page_state_change(struct kvm_vcpu *vcpu, enum psc_op op,
 			 * before we acquire the lock. Retry the PSC.
 			 */
 			write_unlock(&kvm->mmu_lock);
+			spin_unlock(&sev->psc_lock);
 			return 0;
 		}
 
