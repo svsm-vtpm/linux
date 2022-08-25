@@ -114,7 +114,9 @@ static DEFINE_PER_CPU(struct sev_es_runtime_data*, runtime_data);
 DEFINE_STATIC_KEY_FALSE(sev_es_enable_key);
 
 static DEFINE_PER_CPU(struct sev_es_save_area *, sev_vmsa);
-static DEFINE_PER_CPU(struct svsm_caa *, svsm_caa);
+DEFINE_PER_CPU(struct svsm_caa *, svsm_caa);
+
+EXPORT_PER_CPU_SYMBOL(svsm_caa);
 
 struct sev_config {
 	__u64 debug		: 1,

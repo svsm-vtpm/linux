@@ -108,6 +108,85 @@ struct tpm2_crb_smc {
 	u32 smc_func_id;
 };
 
+#include <asm/sev.h>
+#include <asm/sev-common.h>
+#define iowrite32 __io_svsm_write32
+
+#define SVSM_VTPM_REQUEST	8
+
+DECLARE_PER_CPU(struct svsm_caa *, svsm_caa);
+
+static inline u64 sev_es_rd_ghcb_msr(void)
+{
+	return __rdmsr(MSR_AMD64_SEV_ES_GHCB);
+}
+
+static __always_inline void sev_es_wr_ghcb_msr(u64 val)
+{
+	u32 low, high;
+
+	low  = (u32)(val);
+	high = (u32)(val >> 32);
+
+	native_wrmsr(MSR_AMD64_SEV_ES_GHCB, low, high);
+}
+static int __svsm_msr_protocol(struct svsm_caa *caa, u64 rax, u64 rcx, u64 rdx, u64 r8, u64 r9)
+{
+	u64 val, resp;
+	u8 pending;
+	int ret;
+
+	val = sev_es_rd_ghcb_msr();
+
+	sev_es_wr_ghcb_msr(GHCB_MSR_VMPL_REQ_LEVEL(0));
+
+	asm volatile("mov %4, %%r8\n\t"
+		     "mov %5, %%r9\n\t"
+		     "movb $1, %6\n\t"
+		     "rep; vmmcall\n\t"
+		     : "=a" (ret)
+		     : "a" (rax), "c" (rcx), "d" (rdx), "r" (r8), "r" (r9), "m" (caa->call_pending)
+		     : "r8", "r9");
+
+	resp = sev_es_rd_ghcb_msr();
+
+	sev_es_wr_ghcb_msr(val);
+
+	pending = 0;
+	asm volatile("xchgb %0, %1" : "+r" (pending) : "m" (caa->call_pending) : "memory");
+	if (pending)
+		ret = -EINVAL;
+
+	if (GHCB_RESP_CODE(resp) != GHCB_MSR_VMPL_RESP)
+		ret = -EINVAL;
+
+	if (GHCB_MSR_VMPL_RESP_VAL(resp) != 0)
+		ret = -EINVAL;
+
+	return ret;
+}
+
+static int svsm_crb = true;
+
+static int __init svsm_disable_setup(char *str) {
+	svsm_crb = false;
+	return 1;
+}
+__setup("nosvsm", svsm_disable_setup);
+
+void __io_svsm_write32(u32 value, void __iomem *addr) {
+	writel(value, addr);
+	/* play the SEV msr protocol if svsm is enabled */
+	if (svsm_crb) {
+		unsigned long flags;
+		struct svsm_caa *this_caa = this_cpu_read(svsm_caa);
+		local_irq_save(flags);
+		u64 base_addr = (u64) addr & PAGE_MASK;
+		__svsm_msr_protocol(this_caa, SVSM_VTPM_REQUEST, 0, 0, (u64)(addr) - base_addr, value);
+		local_irq_restore(flags);
+	}
+}
+
 static bool crb_wait_for_reg_32(u32 __iomem *reg, u32 mask, u32 value,
 				unsigned long timeout)
 {
