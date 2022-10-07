@@ -27,6 +27,7 @@
 
 #include <asm/smp.h>
 #include <asm/sev.h>
+#include <asm/e820/types.h>
 
 #include "psp-dev.h"
 #include "sev-dev.h"
@@ -80,6 +81,13 @@ static void *sev_es_tmr;
  */
 #define NV_LENGTH (32 * 1024)
 static void *sev_init_ex_buffer;
+
+/*
+ * SEV_DATA_RANGE_LIST:
+ *   Array containing range of pages that firmware transitions to HV-fixed
+ *   page state.
+ */
+struct sev_data_range_list *snp_range_list;
 
 /* When SEV-SNP is enabled the TMR needs to be 2MB aligned and 2MB size. */
 #define SEV_SNP_ES_TMR_SIZE	(2 * 1024 * 1024)
@@ -139,6 +147,8 @@ static int sev_cmd_buffer_len(int cmd)
 	switch (cmd) {
 	case SEV_CMD_INIT:			return sizeof(struct sev_data_init);
 	case SEV_CMD_INIT_EX:                   return sizeof(struct sev_data_init_ex);
+	case SEV_CMD_SNP_SHUTDOWN_EX:		return sizeof(struct sev_data_snp_shutdown_ex);
+	case SEV_CMD_SNP_INIT_EX:		return sizeof(struct sev_data_snp_init_ex);
 	case SEV_CMD_PLATFORM_STATUS:		return sizeof(struct sev_user_data_status);
 	case SEV_CMD_PEK_CSR:			return sizeof(struct sev_data_pek_csr);
 	case SEV_CMD_PEK_CERT_IMPORT:		return sizeof(struct sev_data_pek_cert_import);
@@ -1280,9 +1290,36 @@ static void snp_set_hsave_pa(void *arg)
 	wrmsrl(MSR_VM_HSAVE_PA, 0);
 }
 
+static int snp_filter_reserved_mem_regions(struct resource *rs, void *arg)
+{
+	struct sev_data_range_list *range_list = arg;
+	struct sev_data_range *range = &range_list->ranges[range_list->num_elements];
+	size_t size;
+
+	if ((range_list->num_elements * sizeof(struct sev_data_range) +
+	     sizeof(struct sev_data_range_list)) > PAGE_SIZE)
+	       return -E2BIG;
+
+	switch(rs->desc) {
+		case E820_TYPE_RESERVED:
+		case E820_TYPE_PMEM:
+		case E820_TYPE_ACPI:
+			range->base = rs->start & PAGE_MASK;
+			size = (rs->end + 1) - rs->start;
+			range->page_count = size >> PAGE_SHIFT;
+			range_list->num_elements++;
+			break;
+		default:
+			break;
+	}
+
+	return 0;
+}
+
 static int __sev_snp_init_locked(int *error)
 {
 	struct psp_device *psp = psp_master;
+	struct sev_data_snp_init_ex data;
 	struct sev_device *sev;
 	int rc = 0;
 
@@ -1300,10 +1337,56 @@ static int __sev_snp_init_locked(int *error)
 	 */
 	on_each_cpu(snp_set_hsave_pa, NULL, 1);
 
-	/* Issue the SNP_INIT firmware command. */
-	rc = __sev_do_cmd_locked(SEV_CMD_SNP_INIT, NULL, error);
-	if (rc)
-		return rc;
+	/*
+	 * Starting in SNP firmware v1.52, the SNP_INIT_EX command takes a list of
+	 * system physical address ranges to convert into the HV-fixed page states
+	 * during the RMP initialization.  For instance, the memory that UEFI
+	 * reserves should be included in the range list. This allows system
+	 * components that occasionally write to memory (e.g. logging to UEFI
+	 * reserved regions) to not fail due to RMP initialization and SNP enablement.
+	 */
+	if (sev_version_greater_or_equal(SNP_MIN_API_MAJOR, 52)) {
+		/*
+		 * Firmware checks that the pages containing the ranges enumerated
+		 * in the RANGES structure are either in the Default page state or in the
+		 * firmware page state.
+		 */
+		snp_range_list = sev_fw_alloc(PAGE_SIZE);
+		if (!snp_range_list) {
+			dev_err(sev->dev,
+				"SEV: SNP_INIT_EX range list memory allocation failed\n");
+			return -ENOMEM;
+		}
+
+		memset(snp_range_list, 0, PAGE_SIZE);
+
+		/*
+		 * Retrieve all reserved memory regions setup by UEFI from the e820 memory map
+		 * to be setup as HV-fixed pages.
+		 */
+
+		rc = walk_iomem_res_desc(IORES_DESC_NONE, IORESOURCE_MEM, 0, ~0, snp_range_list, snp_filter_reserved_mem_regions);
+		if (rc) {
+			dev_err(sev->dev,
+				"SEV: SNP_INIT_EX walk_iomem_res_desc failed rc = %d\n", rc);
+			return rc;
+		}
+
+		memset(&data, 0, sizeof(data));
+		data.init_rmp = 1;
+		data.list_paddr_en = 1;
+		data.list_paddr = __pa(snp_range_list);
+
+		/* Issue the SNP_INIT_EX firmware command. */
+		rc = __sev_do_cmd_locked(SEV_CMD_SNP_INIT_EX, &data, error);
+		if (rc)
+			return rc;
+	} else {
+		/* Issue the SNP_INIT firmware command. */
+		rc = __sev_do_cmd_locked(SEV_CMD_SNP_INIT, NULL, error);
+		if (rc)
+			return rc;
+	}
 
 	/* Prepare for first SNP guest launch after INIT */
 	wbinvd_on_all_cpus();
@@ -1337,10 +1420,15 @@ EXPORT_SYMBOL_GPL(sev_snp_init);
 static int __sev_snp_shutdown_locked(int *error)
 {
 	struct sev_device *sev = psp_master->sev_data;
+	struct sev_data_snp_shutdown_ex data;
 	int ret;
 
 	if (!sev->snp_inited)
 		return 0;
+
+	memset(&data, 0, sizeof(data));
+	data.length = sizeof(data);
+	data.iommu_snp_shutdown = 1;
 
 	/* Free the memory used for caching the certificate data */
 	kfree(sev->snp_certs_data);
@@ -1350,7 +1438,7 @@ static int __sev_snp_shutdown_locked(int *error)
 	wbinvd_on_all_cpus();
 	__sev_do_cmd_locked(SEV_CMD_SNP_DF_FLUSH, NULL, NULL);
 
-	ret = __sev_do_cmd_locked(SEV_CMD_SNP_SHUTDOWN, NULL, error);
+	ret = __sev_do_cmd_locked(SEV_CMD_SNP_SHUTDOWN_EX, &data, error);
 	if (ret) {
 		dev_err(sev->dev, "SEV-SNP firmware shutdown failed\n");
 		return ret;
@@ -2080,6 +2168,12 @@ static void sev_firmware_shutdown(struct sev_device *sev)
 		free_pages((unsigned long)sev_init_ex_buffer,
 			   get_order(NV_LENGTH));
 		sev_init_ex_buffer = NULL;
+	}
+
+	if (snp_range_list) {
+		free_pages((unsigned long)snp_range_list,
+			   get_order(PAGE_SIZE));
+		snp_range_list = NULL;
 	}
 
 	/*

@@ -94,6 +94,7 @@ enum sev_cmd {
 	SEV_CMD_SNP_PLATFORM_STATUS	= 0x83,
 	SEV_CMD_SNP_DF_FLUSH		= 0x84,
 	SEV_CMD_SNP_INIT_EX		= 0x85,
+	SEV_CMD_SNP_SHUTDOWN_EX		= 0x86,
 	SEV_CMD_SNP_DECOMMISSION	= 0x90,
 	SEV_CMD_SNP_ACTIVATE		= 0x91,
 	SEV_CMD_SNP_GUEST_STATUS	= 0x92,
@@ -745,14 +746,55 @@ struct sev_data_snp_guest_request {
 } __packed;
 
 /**
- * struuct sev_data_snp_init - SNP_INIT_EX structure
+ * struct sev_data_snp_init - SNP_INIT_EX structure
  *
  * @init_rmp: indicate that the RMP should be initialized.
+ * @list_paddr_en: indicate that list_paddr is valid
+ * #list_paddr: system physical address of range list
  */
 struct sev_data_snp_init_ex {
 	u32 init_rmp:1;
-	u32 rsvd:31;
-	u8 rsvd1[60];
+	u32 list_paddr_en:1;
+	u32 rsvd:30;
+	u32 rsvd1;
+	u64 list_paddr;
+	u8  rsvd2[48];
+} __packed;
+
+/**
+ * struct sev_data_range - RANGE structure
+ *
+ * @base: system physical address of first byte of range
+ * @page_count: number of 4KB pages in this range
+ */
+struct sev_data_range {
+	u64 base;
+	u32 page_count;
+	u32 rsvd;
+} __packed;
+
+/**
+ * struct sev_data_range_list - RANGE_LIST structure
+ *
+ * @num_elements: number of elements in RANGE_ARRAY
+ * @ranges: array of num_elements of type RANGE
+ */
+struct sev_data_range_list {
+	u32 num_elements;
+	u32 rsvd;
+	struct sev_data_range ranges[0];
+} __packed;
+
+/**
+ * struct sev_data_snp_shutdown_ex - SNP_SHUTDOWN_EX structure
+ *
+ * @length: len of the command buffer read by the PSP
+ * @iommu_snp_shutdown: Disable enforcement of SNP in the IOMMU
+ */
+struct sev_data_snp_shutdown_ex {
+	u32 length;
+	u32 iommu_snp_shutdown:1;
+	u32 rsvd1:31;
 } __packed;
 
 #ifdef CONFIG_CRYPTO_DEV_SP_PSP
