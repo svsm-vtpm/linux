@@ -95,7 +95,7 @@ struct kvm_sev_info {
 	void *snp_certs_data;
 	struct mutex guest_req_lock;
 
-	u64 sev_features;	/* Features set at VMSA creation */
+	u64 sev_features[SVM_SEV_VMPL_MAX]; /* Features set at VMSA creation */
 };
 
 struct kvm_svm {
