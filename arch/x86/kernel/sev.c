@@ -21,6 +21,7 @@
 #include <linux/cpumask.h>
 #include <linux/efi.h>
 #include <linux/platform_device.h>
+#include <linux/tpm_platform.h>
 #include <linux/io.h>
 #include <linux/psp-sev.h>
 #include <uapi/linux/sev-guest.h>
@@ -2418,10 +2419,24 @@ static struct platform_device sev_guest_device = {
 	.id		= -1,
 };
 
+static struct platform_device tpm_device = {
+	.name		= "tpm",
+	.id		= -1,
+};
+
+static int tpm_send_buffer(u8 *buffer)
+{
+	struct svsm_caa *caa;
+
+	caa = this_cpu_read(svsm_caa);
+	return __svsm_msr_protocol(caa, 8, __pa(buffer), 0, 0, 0);
+}
+
 static int __init snp_init_platform_device(void)
 {
 	struct sev_guest_platform_data data;
 	u64 gpa;
+	struct svsm_caa *caa = this_cpu_read(svsm_caa);
 
 	if (!cc_platform_has(CC_ATTR_GUEST_SEV_SNP))
 		return -ENODEV;
@@ -2438,6 +2453,24 @@ static int __init snp_init_platform_device(void)
 		return -ENODEV;
 
 	pr_info("SNP guest platform device initialized.\n");
+
+	/*
+	 * The VTPM device is available only if we have a SVSM and it
+	 * probes correctly (probe is to send a call with no arguments
+	 * to function 8 and see it comes back as OK)
+	 */
+	if (IS_ENABLED(CONFIG_TCG_PLATFORM) && svsm_vmpl &&
+	    __svsm_msr_protocol(caa, 8, 0, 0, 0, 0) == 0) {
+		struct tpm_platform_ops pops = {
+			.sendrcv = tpm_send_buffer,
+		};
+
+		if (platform_device_add_data(&tpm_device, &pops, sizeof(pops)))
+			return -ENODEV;
+		if (platform_device_register(&tpm_device))
+			return -ENODEV;
+		pr_info("SNP SVSM VTPM platform device initialized\n");
+	}
 	return 0;
 }
 device_initcall(snp_init_platform_device);
