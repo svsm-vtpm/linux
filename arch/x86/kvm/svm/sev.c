@@ -3715,33 +3715,53 @@ static void sev_get_apic_ids(struct vcpu_svm *svm)
 	kvfree(desc);
 }
 
-static int __sev_run_vmpl_vmsa(struct vcpu_svm *svm, unsigned int vmpl)
+static int __sev_run_vmpl_vmsa(struct vcpu_svm *svm, unsigned int new_vmpl)
 {
 	struct kvm_vcpu *vcpu = &svm->vcpu;
+	unsigned int old_vmpl;
 
-	if (vmpl >= SVM_SEV_VMPL_MAX)
+	if (new_vmpl >= SVM_SEV_VMPL_MAX)
 		return -EINVAL;
-	vmpl = array_index_nospec(vmpl, SVM_SEV_VMPL_MAX);
+	new_vmpl = array_index_nospec(new_vmpl, SVM_SEV_VMPL_MAX);
 
-	svm->snp_target_vmpl = vmpl;
+	old_vmpl = svm->snp_current_vmpl;
+	svm->snp_target_vmpl = new_vmpl;
 
 	if (svm->snp_target_vmpl == svm->snp_current_vmpl ||
 	    sev_snp_init_protected_guest_state(vcpu))
 		return 0;
 
 	/* If the VMSA is not valid, return an error */
-	if (!VALID_PAGE(svm->vmsa_pa[vmpl]))
+	if (!VALID_PAGE(svm->vmsa_pa[new_vmpl]))
 		return -EINVAL;
 
 	/* Unmap the current GHCB */
 	sev_es_unmap_ghcb(svm);
 
-	svm->ghcb_gpa[svm->snp_current_vmpl] = svm->vmcb->control.ghcb_gpa;
+	/* Save some current VMCB values */
+	svm->ghcb_gpa[old_vmpl]			= svm->vmcb->control.ghcb_gpa;
 
-	svm->vmcb->control.vmsa_pa = svm->vmsa_pa[vmpl];
-	svm->vmcb->control.ghcb_gpa = svm->ghcb_gpa[vmpl];
+	svm->vssa[old_vmpl].exit_int_info	= svm->vmcb->control.exit_int_info;
+	svm->vssa[old_vmpl].exit_int_info_err	= svm->vmcb->control.exit_int_info_err;
+	svm->vssa[old_vmpl].cr0			= vcpu->arch.cr0;
+	svm->vssa[old_vmpl].cr2			= vcpu->arch.cr2;
+	svm->vssa[old_vmpl].cr4			= vcpu->arch.cr4;
+	svm->vssa[old_vmpl].cr8			= vcpu->arch.cr8;
+	svm->vssa[old_vmpl].efer		= vcpu->arch.efer;
 
-	svm->snp_current_vmpl = vmpl;
+	/* Restore some previous VMCB values */
+	svm->vmcb->control.vmsa_pa		= svm->vmsa_pa[new_vmpl];
+	svm->vmcb->control.ghcb_gpa		= svm->ghcb_gpa[new_vmpl];
+
+	svm->vmcb->control.exit_int_info	= svm->vssa[new_vmpl].exit_int_info;
+	svm->vmcb->control.exit_int_info_err	= svm->vssa[new_vmpl].exit_int_info_err;
+	vcpu->arch.cr0				= svm->vssa[new_vmpl].cr0;
+	vcpu->arch.cr2				= svm->vssa[new_vmpl].cr2;
+	vcpu->arch.cr4				= svm->vssa[new_vmpl].cr4;
+	vcpu->arch.cr8				= svm->vssa[new_vmpl].cr8;
+	vcpu->arch.efer				= svm->vssa[new_vmpl].efer;
+
+	svm->snp_current_vmpl = new_vmpl;
 
 	vmcb_mark_all_dirty(svm->vmcb);
 

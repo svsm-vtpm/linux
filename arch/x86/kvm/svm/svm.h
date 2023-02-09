@@ -144,6 +144,17 @@ struct snp_vmsa_update {
 	bool  ap_create;	/* SEV-SNP AP Creation */
 };
 
+struct vmpl_switch_sa {
+	u32  exit_int_info;
+	u32  exit_int_info_err;
+
+	unsigned long cr0;
+	unsigned long cr2;
+	unsigned long cr4;
+	unsigned long cr8;
+	u64 efer;
+};
+
 struct vcpu_svm {
 	struct kvm_vcpu vcpu;
 	/* vmcb always points at current_vmcb->ptr, it's purely a shorthand. */
@@ -233,6 +244,8 @@ struct vcpu_svm {
 	struct snp_vmsa_update snp_vmsa[SVM_SEV_VMPL_MAX];
 	unsigned int snp_current_vmpl;
 	unsigned int snp_target_vmpl;
+
+	struct vmpl_switch_sa vssa[SVM_SEV_VMPL_MAX];
 };
 
 struct svm_cpu_data {
