@@ -3926,6 +3926,19 @@ static __no_kcsan fastpath_t svm_vcpu_run(struct kvm_vcpu *vcpu)
 		vcpu->arch.regs[VCPU_REGS_RIP] = svm->vmcb->save.rip;
 	}
 
+	if (sev_snp_guest(vcpu->kvm)) {
+		/*
+		 * If SEV-SNP is running with restricted injection, the V_IRQ
+		 * bit may be cleared on exit if it was set on entry because
+		 * virtual interrupt support is ignored. To support multiple
+		 * VMPLs, ensure to reset the V_IRQ bit if a virtual interrupt
+		 * is meant to be active (the virtual interrupt priority mask
+		 * is non-zero).
+		 */
+		if (svm->vmcb->control.int_ctl & V_INTR_PRIO_MASK)
+			svm->vmcb->control.int_ctl |= V_IRQ_MASK;
+	}
+
 	if (unlikely(svm->vmcb->control.exit_code == SVM_EXIT_NMI))
 		kvm_before_interrupt(vcpu);
 
