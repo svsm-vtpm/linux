@@ -115,6 +115,11 @@ struct ghcb_state {
 static DEFINE_PER_CPU(struct sev_es_runtime_data*, runtime_data);
 static DEFINE_PER_CPU(struct sev_es_save_area *, sev_vmsa);
 
+static struct svsm_caa *boot_svsm_caa __ro_after_init;
+static u64 boot_svsm_caa_pa __ro_after_init;
+
+static u8 svsm_vmpl __ro_after_init;
+
 struct sev_config {
 	__u64 debug		: 1,
 
@@ -2059,6 +2064,13 @@ bool __init snp_init(struct boot_params *bp)
 		return false;
 
 	setup_cpuid_table(cc_info);
+
+	/*
+	 * Record the address of the SVSM CAA if the guest is not running
+	 * at VMPL0. The CAA will be used to communicate with the SVSM to
+	 * perform the SVSM services.
+	 */
+	setup_svsm_caa(cc_info);
 
 	/*
 	 * The CC blob will be used later to access the secrets page. Cache

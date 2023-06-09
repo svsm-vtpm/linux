@@ -12,6 +12,7 @@
  */
 #include "misc.h"
 
+#include <linux/mm.h>
 #include <asm/pgtable_types.h>
 #include <asm/sev.h>
 #include <asm/trapnr.h>
@@ -27,6 +28,10 @@
 
 struct ghcb boot_ghcb_page __aligned(PAGE_SIZE);
 struct ghcb *boot_ghcb;
+
+static u8 svsm_vmpl __section(".data");
+static u64 boot_svsm_caa_pa __section(".data");
+static struct svsm_caa *boot_svsm_caa __section(".data");
 
 /*
  * Copy a version of this function here - insn-eval.c can't be used in
@@ -458,6 +463,13 @@ static bool snp_setup(struct boot_params *bp)
 	 * more details.
 	 */
 	setup_cpuid_table(cc_info);
+
+	/*
+	 * Record the address of the SVSM CAA if the guest is not running
+	 * at VMPL0. The CAA will be used to communicate with the SVSM to
+	 * perform the SVSM services.
+	 */
+	setup_svsm_caa(cc_info);
 
 	/*
 	 * Pass run-time kernel a pointer to CC info via boot_params so EFI

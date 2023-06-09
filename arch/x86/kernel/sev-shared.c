@@ -1134,3 +1134,38 @@ static int vmgexit_psc(struct ghcb *ghcb, struct snp_psc_desc *desc)
 out:
 	return ret;
 }
+
+/*
+ * Maintain the GPA of the SVSM CAA in order to utilize the SVSM services
+ * needed when not runnuing in VMPL0.
+ */
+static void __init setup_svsm_caa(const struct cc_blob_sev_info *cc_info)
+{
+	struct snp_secrets_page_layout *secrets_page;
+	u64 caa_pa;
+
+	BUILD_BUG_ON(sizeof(*secrets_page) != PAGE_SIZE);
+
+	if (!cc_info || !cc_info->secrets_phys || cc_info->secrets_len != PAGE_SIZE)
+		sev_es_terminate(SEV_TERM_SET_LINUX, GHCB_TERM_SECRETS_PAGE);
+
+	secrets_page = (struct snp_secrets_page_layout *)cc_info->secrets_phys;
+	if (!secrets_page->svsm_size)
+		return;
+
+	if (!secrets_page->svsm_guest_vmpl)
+		sev_es_terminate(SEV_TERM_SET_LINUX, GHCB_TERM_SVSM_VMPL0);
+
+	svsm_vmpl = secrets_page->svsm_guest_vmpl;
+
+	caa_pa = secrets_page->svsm_caa;
+	if (!PAGE_ALIGNED(caa_pa))
+		sev_es_terminate(SEV_TERM_SET_LINUX, GHCB_TERM_SVSM_CAA);
+
+	/*
+	 * The CAA is identity mapped when this routine is called, both by the
+	 * decompressor code and the early kernel code.
+	 */
+	boot_svsm_caa = (struct svsm_caa *)caa_pa;
+	boot_svsm_caa_pa = caa_pa;
+}
