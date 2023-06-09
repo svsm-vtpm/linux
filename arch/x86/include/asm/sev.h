@@ -274,6 +274,7 @@ void __init __noreturn snp_abort(void);
 int snp_issue_guest_request(u64 exit_code, struct snp_req_data *input, struct snp_guest_request_ioctl *rio);
 void snp_accept_memory(phys_addr_t start, phys_addr_t end);
 void __init snp_remap_svsm_caa(void);
+int snp_get_vmpl(void);
 #else
 static inline void sev_es_ist_enter(struct pt_regs *regs) { }
 static inline void sev_es_ist_exit(void) { }
@@ -300,6 +301,7 @@ static inline int snp_issue_guest_request(u64 exit_code, struct snp_req_data *in
 
 static inline void snp_accept_memory(phys_addr_t start, phys_addr_t end) { }
 static inline void snp_remap_svsm_caa(void) { }
+static inline int snp_get_vmpl(void) { return 0; }
 #endif
 
 #endif
