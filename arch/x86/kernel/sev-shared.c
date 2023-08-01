@@ -14,7 +14,9 @@
 #define has_cpuflag(f)	boot_cpu_has(f)
 #else
 #undef WARN
-#define WARN(condition, format...) (!!(condition))
+#define WARN(condition, format...)	(!!(condition))
+#undef vc_forward_exception
+#define vc_forward_exception(c)		panic("SNP: Hypervisor requested exception\n");
 #endif
 
 /* I/O parameters for CPUID-related helpers */
@@ -220,6 +222,87 @@ static enum es_result verify_exception_info(struct ghcb *ghcb, struct es_em_ctxt
 	}
 
 	return ES_VMM_ERROR;
+}
+
+static int __svsm_msr_protocol(struct svsm_call *call)
+{
+	u64 val, resp;
+	u8 pending;
+	int ret;
+
+	val = sev_es_rd_ghcb_msr();
+
+	sev_es_wr_ghcb_msr(GHCB_MSR_VMPL_REQ_LEVEL(0));
+
+	asm volatile("mov %4, %%r8\n\t"
+		     "mov %5, %%r9\n\t"
+		     "movb $1, %6\n\t"
+		     "rep; vmmcall\n\t"
+		     : "=a" (ret)
+		     : "a" (call->rax), "c" (call->rcx), "d" (call->rdx),
+		       "r" (call->r8), "r" (call->r9), "m" (call->caa->call_pending)
+		     : "r8", "r9");
+
+	resp = sev_es_rd_ghcb_msr();
+
+	sev_es_wr_ghcb_msr(val);
+
+	pending = 0;
+	asm volatile("xchgb %0, %1" : "+r" (pending) : "m" (call->caa->call_pending) : "memory");
+	if (pending)
+		return -EINVAL;
+
+	if (GHCB_RESP_CODE(resp) != GHCB_MSR_VMPL_RESP)
+		return -EINVAL;
+
+	if (GHCB_MSR_VMPL_RESP_VAL(resp) != 0)
+		return -EINVAL;
+
+	return ret;
+}
+
+static int __svsm_ghcb_protocol(struct ghcb *ghcb, struct svsm_call *call)
+{
+	struct es_em_ctxt ctxt;
+	u8 pending;
+	int ret;
+
+	vc_ghcb_invalidate(ghcb);
+
+	/* Fill in protocol and format specifiers */
+	ghcb->protocol_version = ghcb_version;
+	ghcb->ghcb_usage       = GHCB_DEFAULT_USAGE;
+
+	ghcb_set_sw_exit_code(ghcb, SVM_VMGEXIT_SNP_RUN_VMPL);
+	ghcb_set_sw_exit_info_1(ghcb, 0);
+	ghcb_set_sw_exit_info_2(ghcb, 0);
+
+	sev_es_wr_ghcb_msr(__pa(ghcb));
+	asm volatile("mov %4, %%r8\n\t"
+		     "mov %5, %%r9\n\t"
+		     "movb $1, %6\n\t"
+		     "rep; vmmcall\n\t"
+		     : "=a" (ret)
+		     : "a" (call->rax), "c" (call->rcx), "d" (call->rdx),
+		       "r" (call->r8), "r" (call->r9), "m" (call->caa->call_pending)
+		     : "r8", "r9");
+
+	pending = 0;
+	asm volatile("xchgb %0, %1" : "+r" (pending) : "m" (call->caa->call_pending) : "memory");
+	if (pending)
+		return -EINVAL;
+
+	switch (verify_exception_info(ghcb, &ctxt)) {
+	case ES_OK:
+		break;
+	case ES_EXCEPTION:
+		vc_forward_exception(&ctxt);
+		fallthrough;
+	default:
+		return -EINVAL;
+	}
+
+	return ret;
 }
 
 static enum es_result sev_es_ghcb_hv_call(struct ghcb *ghcb,

@@ -518,6 +518,12 @@ void __init sme_early_init(void)
 	 */
 	if (sev_status & MSR_AMD64_SEV_ES_ENABLED)
 		x86_cpuinit.parallel_bringup = false;
+
+	/*
+	 * Switch the SVSM CAA mapping (if active) from identity mapped to
+	 * kernel mapped.
+	 */
+	snp_remap_svsm_caa();
 }
 
 void __init mem_encrypt_free_decrypted_mem(void)

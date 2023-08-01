@@ -502,7 +502,7 @@ void __init sme_encrypt_kernel(struct boot_params *bp)
 	native_write_cr3(__native_read_cr3());
 }
 
-void __init sme_enable(struct boot_params *bp)
+void __init sme_enable(unsigned long physbase, struct boot_params *bp)
 {
 	const char *cmdline_ptr, *cmdline_arg, *cmdline_on, *cmdline_off;
 	unsigned int eax, ebx, ecx, edx;
@@ -513,7 +513,7 @@ void __init sme_enable(struct boot_params *bp)
 	bool snp;
 	u64 msr;
 
-	snp = snp_init(bp);
+	snp = snp_init(bp, physbase);
 
 	/* Check for the SME/SEV support leaf */
 	eax = 0x80000000;

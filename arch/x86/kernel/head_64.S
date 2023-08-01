@@ -95,7 +95,7 @@ SYM_CODE_START_NOALIGN(startup_64)
 	 * which needs to be done before any CPUID instructions are executed in
 	 * subsequent code.
 	 */
-	movq	%rsi, %rdi
+	leaq	_text(%rip), %rdi
 	pushq	%rsi
 	call	sme_enable
 	popq	%rsi
