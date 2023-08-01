@@ -1130,6 +1130,16 @@ static int svsm_pvalidate_4k_page(unsigned long paddr, bool validate)
 	struct svsm_pvalidate_call *pvalidate_call;
 	struct svsm_call call = {};
 	u64 pvalidate_call_pa;
+	unsigned long flags;
+	int ret;
+
+	/*
+	 * This can be called very early in the boot, use native functions in
+	 * order to avoid paravirt issues.
+	 */
+	flags = native_save_fl();
+	if (flags & X86_EFLAGS_IF)
+		native_irq_disable();
 
 	call.caa = __svsm_get_caa();
 
@@ -1147,10 +1157,15 @@ static int svsm_pvalidate_4k_page(unsigned long paddr, bool validate)
 	call.rax = 1;
 	call.rcx = pvalidate_call_pa;
 
-	return svsm_protocol(&call);
+	ret = svsm_protocol(&call);
+
+	if (flags & X86_EFLAGS_IF)
+		native_irq_enable();
+
+	return ret;
 }
 
-static void __maybe_unused pvalidate_4k_page(unsigned long vaddr, unsigned long paddr, bool validate)
+static void pvalidate_4k_page(unsigned long vaddr, unsigned long paddr, bool validate)
 {
 	int ret;
 
@@ -1204,9 +1219,18 @@ static void svsm_pvalidate_pages(struct snp_psc_desc *desc)
 	struct svsm_call call = {};
 	u64 pvalidate_call_pa;
 	struct psc_entry *e;
+	unsigned long flags;
 	unsigned long vaddr;
 	bool action;
 	int ret;
+
+	/*
+	 * This can be called very early in the boot, use native functions in
+	 * order to avoid paravirt issues.
+	 */
+	flags = native_save_fl();
+	if (flags & X86_EFLAGS_IF)
+		native_irq_disable();
 
 	call.caa = __svsm_get_caa();
 
@@ -1290,6 +1314,9 @@ static void svsm_pvalidate_pages(struct snp_psc_desc *desc)
 		pvalidate_call->entries = 0;
 		pvalidate_call->next    = 0;
 	}
+
+	if (flags & X86_EFLAGS_IF)
+		native_irq_enable();
 }
 
 static void pvalidate_pages(struct snp_psc_desc *desc)
