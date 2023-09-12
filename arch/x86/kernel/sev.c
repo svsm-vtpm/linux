@@ -2429,7 +2429,7 @@ static int tpm_send_buffer(u8 *buffer)
 	struct svsm_caa *caa;
 
 	caa = this_cpu_read(svsm_caa);
-	return __svsm_msr_protocol(caa, 8, __pa(buffer), 0, 0, 0);
+	return __svsm_msr_protocol(caa,(2UL<<32)+1, __pa(buffer), 0, 0, 0);
 }
 
 static int __init snp_init_platform_device(void)
@@ -2460,7 +2460,7 @@ static int __init snp_init_platform_device(void)
 	 * to function 8 and see it comes back as OK)
 	 */
 	if (IS_ENABLED(CONFIG_TCG_PLATFORM) && svsm_vmpl &&
-	    __svsm_msr_protocol(caa, 8, 0, 0, 0, 0) == 0) {
+	    __svsm_msr_protocol(caa, (2UL<<32)+1, 0, 0, 0, 0) == 0) {
 		struct tpm_platform_ops pops = {
 			.sendrcv = tpm_send_buffer,
 		};
