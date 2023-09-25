@@ -2426,17 +2426,20 @@ static struct platform_device tpm_device = {
 
 static int tpm_send_buffer(u8 *buffer)
 {
-	struct svsm_caa *caa;
+	struct svsm_call call = {};
 
-	caa = this_cpu_read(svsm_caa);
-	return __svsm_msr_protocol(caa,(2UL<<32)+1, __pa(buffer), 0, 0, 0);
+	call.caa = __svsm_get_caa();
+	call.rax = (2UL<<32)+1;
+	call.rcx = __pa(buffer);
+
+	return svsm_protocol(&call);
 }
 
 static int __init snp_init_platform_device(void)
 {
 	struct sev_guest_platform_data data;
 	u64 gpa;
-	struct svsm_caa *caa = this_cpu_read(svsm_caa);
+	struct svsm_call call = {};
 
 	if (!cc_platform_has(CC_ATTR_GUEST_SEV_SNP))
 		return -ENODEV;
@@ -2459,8 +2462,13 @@ static int __init snp_init_platform_device(void)
 	 * probes correctly (probe is to send a call with no arguments
 	 * to function 8 and see it comes back as OK)
 	 */
+
+	call.caa = __svsm_get_caa();
+	call.rax = (2UL<<32)+1;
+	call.rcx = 0;
+
 	if (IS_ENABLED(CONFIG_TCG_PLATFORM) && svsm_vmpl &&
-	    __svsm_msr_protocol(caa, (2UL<<32)+1, 0, 0, 0, 0) == 0) {
+	    svsm_protocol(&call) == 0) {
 		struct tpm_platform_ops pops = {
 			.sendrcv = tpm_send_buffer,
 		};
