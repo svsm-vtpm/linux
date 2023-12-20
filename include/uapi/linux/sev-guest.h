@@ -72,6 +72,36 @@ struct snp_ext_report_req {
 	__u32 certs_len;
 };
 
+struct snp_svsm_attest_services_req {
+       /* nonce that should be included in the report */
+       __u8 nonce[32];
+
+       /* where to copy the certificate blob */
+       __u64 certs_address;
+
+       /* length of the certificate buffer */
+       __u32 certs_len;
+};
+
+struct snp_svsm_attest_services_resp {
+       /* length of the returned attestation report */
+       __u32 report_len;
+
+       /* length of the returned services manifest */
+       __u32 services_manifest_len;
+
+       /* length of the returned certificates blob */
+       __u32 certs_len;
+
+       __u8 rsvd[4];
+
+       /* services manifest */
+       __u8 services_manifest[1024];
+
+       /* attestation report, see SEV-SNP spec for the format */
+       __u8 report[3000];
+};
+
 #define SNP_GUEST_REQ_IOC_TYPE	'S'
 
 /* Get SNP attestation report */
@@ -82,6 +112,10 @@ struct snp_ext_report_req {
 
 /* Get SNP extended report as defined in the GHCB specification version 2. */
 #define SNP_GET_EXT_REPORT _IOWR(SNP_GUEST_REQ_IOC_TYPE, 0x2, struct snp_guest_request_ioctl)
+
+/* Get SVSM attest services report as defined in the SVSM specification */
+#define SNP_SVSM_ATTEST_SERVICES                                               \
+       _IOWR(SNP_GUEST_REQ_IOC_TYPE, 0x3, struct snp_guest_request_ioctl)
 
 /* Guest message request EXIT_INFO_2 constants */
 #define SNP_GUEST_FW_ERR_MASK		GENMASK_ULL(31, 0)

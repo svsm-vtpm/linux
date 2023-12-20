@@ -626,6 +626,100 @@ e_free:
 	return ret;
 }
 
+static int call_svsm_attest_services(struct snp_guest_dev *snp_dev,
+                                    struct snp_guest_request_ioctl *arg)
+{
+       struct snp_svsm_attest_services_req req;
+       struct snp_svsm_attest_services_resp *resp;
+       int ret;
+       struct page *page;
+       u8 *nonce, *report, *services_manifest, *certs;
+       u32 report_size, services_manifest_size, certs_size;
+
+       if (!arg->req_data || !arg->resp_data)
+               return -EINVAL;
+
+       if (copy_from_user(&req, (void __user *)arg->req_data, sizeof(req)))
+               return -EFAULT;
+
+       if (!access_ok((void __user *)req.certs_address, req.certs_len))
+               return -EFAULT;
+
+       /*
+        * Since we're allocating 32 bytes, the buffer is ensured to not cross
+        * a page boundary.
+        */
+       nonce = kzalloc(sizeof(req.nonce), GFP_KERNEL_ACCOUNT);
+       if (!nonce)
+               return -EFAULT;
+       memcpy(nonce, req.nonce, sizeof(req.nonce));
+
+       /* The report buffer passed to SVSM must be 4KB aligned */
+       page = alloc_pages(GFP_KERNEL_ACCOUNT, get_order(sizeof(resp->report)));
+       if (IS_ERR(page)) {
+               ret = -EFAULT;
+               goto free_nonce;
+       }
+       report = page_address(page);
+       report_size = sizeof(resp->report);
+
+       /* The services manifest buffer passed to SVSM must be 4KB aligned */
+       page = alloc_pages(GFP_KERNEL_ACCOUNT,
+                          get_order(sizeof(resp->services_manifest)));
+       if (IS_ERR(page)) {
+               ret = -EFAULT;
+               goto free_report;
+       }
+       services_manifest = page_address(page);
+       services_manifest_size = sizeof(resp->services_manifest);
+
+       /* The certificates buffer passed to SVSM must be 4KB aligned */
+       page = alloc_pages(GFP_KERNEL_ACCOUNT, get_order(req.certs_len));
+       if (IS_ERR(page)) {
+               ret = -EFAULT;
+               goto free_manifest;
+       }
+       certs = page_address(page);
+       certs_size = req.certs_len;
+
+       ret = snp_svsm_attest_services(nonce, sizeof(req.nonce), report,
+                                      &report_size, services_manifest,
+                                      &services_manifest_size, certs,
+                                      &certs_size);
+       if (ret)
+               goto free_certs;
+
+	dev_err(snp_dev->dev, "report_size %x\n", report_size);
+	dev_err(snp_dev->dev, "manifest_size %x\n", services_manifest_size);
+	dev_err(snp_dev->dev, "certs_size %x\n", certs_size);
+
+       if (copy_to_user((void __user *)req.certs_address, certs,
+                        req.certs_len)) {
+               ret = -EFAULT;
+               goto free_certs;
+       }
+       resp = kzalloc(sizeof(*resp), GFP_KERNEL_ACCOUNT);
+       resp->report_len = report_size;
+       resp->services_manifest_len = services_manifest_size;
+       resp->certs_len = certs_size;
+       memcpy(resp->services_manifest, services_manifest, services_manifest_size);
+       memcpy(resp->report, report, report_size);
+       if (copy_to_user((void __user *)arg->resp_data, resp, sizeof(*resp)))
+               ret = -EFAULT;
+       kfree(resp);
+
+free_certs:
+       free_pages((unsigned long)certs, get_order(req.certs_len));
+free_manifest:
+       free_pages((unsigned long)services_manifest,
+                  get_order(sizeof(resp->services_manifest)));
+free_report:
+       free_pages((unsigned long)report, get_order(sizeof(resp->report)));
+free_nonce:
+       kfree(nonce);
+       return ret;
+}
+
 static long snp_guest_ioctl(struct file *file, unsigned int ioctl, unsigned long arg)
 {
 	struct snp_guest_dev *snp_dev = to_snp_dev(file);
@@ -661,6 +755,9 @@ static long snp_guest_ioctl(struct file *file, unsigned int ioctl, unsigned long
 	case SNP_GET_EXT_REPORT:
 		ret = get_ext_report(snp_dev, &input);
 		break;
+        case SNP_SVSM_ATTEST_SERVICES:
+                ret = call_svsm_attest_services(snp_dev, &input);
+                break;
 	default:
 		break;
 	}
