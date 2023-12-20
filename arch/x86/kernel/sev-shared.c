@@ -230,12 +230,11 @@ static int __svsm_msr_protocol(struct svsm_call *call)
 {
 	u64 val, resp;
 	u8 pending;
-	int ret;
+        int ret;
 
 	val = sev_es_rd_ghcb_msr();
 
 	sev_es_wr_ghcb_msr(GHCB_MSR_VMPL_REQ_LEVEL(0));
-
 	asm volatile("mov %4, %%r8\n\t"
 		     "mov %5, %%r9\n\t"
 		     "movb $1, %6\n\t"
@@ -261,6 +260,50 @@ static int __svsm_msr_protocol(struct svsm_call *call)
 		return -EINVAL;
 
 	return ret;
+}
+
+static int __svsm_msr_protocol_ret(struct svsm_call *call)
+{
+       u64 val, resp;
+       u8 pending;
+       u64 rax, rcx, rdx, r8, r9;
+
+       val = sev_es_rd_ghcb_msr();
+
+       sev_es_wr_ghcb_msr(GHCB_MSR_VMPL_REQ_LEVEL(0));
+
+       asm volatile("mov %8, %%r8\n\t"
+                    "mov %9, %%r9\n\t"
+                    "movb $1, %10\n\t"
+                    "rep; vmmcall\n\t"
+                    "mov %%r8, %3\n\t"
+                    "mov %%r9, %4\n\t"
+                    : "=a" (rax), "=c" (rcx), "=d" (rdx), "=r" (r8), "=r" (r9)
+                    : "a" (call->rax), "c" (call->rcx), "d" (call->rdx),
+		      "r" (call->r8), "r" (call->r9), "m" (call->caa->call_pending) : );
+
+       resp = sev_es_rd_ghcb_msr();
+
+       sev_es_wr_ghcb_msr(val);
+
+       pending = 0;
+       asm volatile("xchgb %0, %1" : "+r" (pending) : "m" (call->caa->call_pending) : "memory");
+       if (pending)
+               return -EINVAL;
+
+       if (GHCB_RESP_CODE(resp) != GHCB_MSR_VMPL_RESP)
+               return -EINVAL;
+
+       if (GHCB_MSR_VMPL_RESP_VAL(resp) != 0)
+               return -EINVAL;
+
+	call->rax = rax;
+	call->rcx = rcx;
+	call->rdx = rdx;
+	call->r8 = r8;
+	call->r9 = r9;
+
+	return (int)rax;
 }
 
 static int __svsm_ghcb_protocol(struct ghcb *ghcb, struct svsm_call *call)
@@ -305,6 +348,56 @@ static int __svsm_ghcb_protocol(struct ghcb *ghcb, struct svsm_call *call)
 	}
 
 	return ret;
+}
+
+static int __svsm_ghcb_protocol_ret(struct ghcb *ghcb, struct svsm_call *call)
+{
+	struct es_em_ctxt ctxt;
+	u8 pending;
+	u64 rax, rcx, rdx, r8, r9;
+
+	vc_ghcb_invalidate(ghcb);
+
+	ghcb->protocol_version = ghcb_version;
+	ghcb->ghcb_usage       = GHCB_DEFAULT_USAGE;
+
+	ghcb_set_sw_exit_code(ghcb, SVM_VMGEXIT_SNP_RUN_VMPL);
+	ghcb_set_sw_exit_info_1(ghcb, 0);
+	ghcb_set_sw_exit_info_2(ghcb, 0);
+
+	sev_es_wr_ghcb_msr(__pa(ghcb));
+	asm volatile("mov %8, %%r8\n\t"
+		     "mov %9, %%r9\n\t"
+		     "movb $1, %10\n\t"
+		     "rep; vmmcall\n\t"
+		     "mov %%r8, %3\n\t"
+		     "mov %%r9, %4\n\t"
+		     : "=a" (rax), "=c" (rcx), "=d" (rdx), "=r" (r8), "=r" (r9)
+		     : "a" (call->rax), "c" (call->rcx), "d" (call->rdx),
+		       "r" (call->r8), "r" (call->r9), "m" (call->caa->call_pending) : );
+
+	pending = 0;
+	asm volatile("xchgb %0, %1" : "+r" (pending) : "m" (call->caa->call_pending) : "memory");
+	if (pending)
+		return -EINVAL;
+
+	switch (verify_exception_info(ghcb, &ctxt)) {
+	case ES_OK:
+		break;
+	case ES_EXCEPTION:
+		vc_forward_exception(&ctxt);
+		fallthrough;
+	default:
+		return -EINVAL;
+	}
+
+	call->rax = rax;
+	call->rcx = rcx;
+	call->rdx = rdx;
+	call->r8 = r8;
+	call->r9 = r9;
+
+	return (int)rax;
 }
 
 static enum es_result sev_es_ghcb_hv_call(struct ghcb *ghcb,
