@@ -609,7 +609,7 @@ static noinstr void __sev_put_ghcb(struct ghcb_state *state)
 	}
 }
 
-static int svsm_protocol(struct svsm_call *call)
+static int __svsm_protocol(struct svsm_call *call, bool with_output_ret)
 {
 	struct ghcb_state state;
 	unsigned long flags;
@@ -631,10 +631,17 @@ static int svsm_protocol(struct svsm_call *call)
 	else
 		ghcb = NULL;
 
-	do {
-		ret = ghcb ? __svsm_ghcb_protocol(ghcb, call)
-			   : __svsm_msr_protocol(call);
-	} while (ret == SVSM_ERR_BUSY);
+	if (with_output_ret) {
+		do {
+			ret = ghcb ? __svsm_ghcb_protocol_ret(ghcb, call)
+				   : __svsm_msr_protocol_ret(call);
+		} while (ret == SVSM_ERR_BUSY);
+	} else {
+		do {
+			ret = ghcb ? __svsm_ghcb_protocol(ghcb, call)
+				   : __svsm_msr_protocol(call);
+		} while (ret == SVSM_ERR_BUSY);
+	}
 
 	if (sev_cfg.ghcbs_initialized)
 		__sev_put_ghcb(&state);
@@ -643,6 +650,14 @@ static int svsm_protocol(struct svsm_call *call)
 		native_irq_enable();
 
 	return ret;
+}
+
+static int svsm_protocol(struct svsm_call *call) {
+	return __svsm_protocol(call, false);
+}
+
+static int svsm_protocol_ret(struct svsm_call *call) {
+	return __svsm_protocol(call, true);
 }
 
 void noinstr __sev_es_nmi_complete(void)
@@ -2413,6 +2428,57 @@ int snp_get_vmpl(void)
 	return svsm_vmpl;
 }
 EXPORT_SYMBOL_GPL(snp_get_vmpl);
+
+int snp_svsm_attest_services(void *nonce, u32 nonce_size, void *report,
+                            u32 *report_size, void *services_manifest,
+                            u32 *services_manifest_size, void *certs,
+                            u32 *certs_size)
+{
+	struct svsm_attest_services_call *attest_call;
+	struct svsm_call call = {};
+	u64 attest_call_gpa;
+	u64 function = (u64)1 << 32 | (u64)0;
+	unsigned long flags;
+	int ret;
+
+	flags = native_save_fl();
+	if (flags & X86_EFLAGS_IF)
+		native_irq_disable();
+
+	call.caa = __svsm_get_caa();
+
+	memset(call.caa->svsm_buffer, 0, sizeof(*call.caa->svsm_buffer));
+	attest_call = (struct svsm_attest_services_call *)call.caa->svsm_buffer;
+	attest_call_gpa = __svsm_get_caa_pa() + offsetof(struct svsm_caa, svsm_buffer);
+
+	attest_call->report_address = __pa(report);
+	attest_call->report_size = *report_size;
+	attest_call->nonce_address = __pa(nonce);
+	attest_call->nonce_size = nonce_size;
+	attest_call->services_manifest_address = __pa(services_manifest);
+	attest_call->services_manifest_size = *services_manifest_size;
+	attest_call->certs_address = __pa(certs);
+	attest_call->certs_size = *certs_size;
+
+	call.rax = function;
+	call.rcx = attest_call_gpa;
+	call.rdx = 0;
+	call.r8 = 0;
+	call.r9 = 0;
+
+	ret = svsm_protocol_ret(&call);
+
+	*report_size = call.r8;
+	*services_manifest_size = call.rcx;
+	*certs_size = call.rdx;
+
+	if (flags & X86_EFLAGS_IF)
+		native_irq_enable();
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(snp_svsm_attest_services);
+
 
 static struct platform_device sev_guest_device = {
 	.name		= "sev-guest",

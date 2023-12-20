@@ -194,6 +194,21 @@ struct svsm_pvalidate_call {
 	struct svsm_pvalidate_entry entry[];
 };
 
+struct svsm_attest_services_call {
+       u64 report_address;
+       u32 report_size;
+       u8  reserved_1[4];
+       u64 nonce_address;
+       u16 nonce_size;
+       u8  reserved_2[6];
+       u64 services_manifest_address;
+       u32 services_manifest_size;
+       u8  reserved_3[4];
+       u64 certs_address;
+       u32 certs_size;
+       u8  reserved_4[4];
+};
+
 struct svsm_call {
 	struct svsm_caa *caa;
 	u64 rax;
@@ -275,6 +290,10 @@ int snp_issue_guest_request(u64 exit_code, struct snp_req_data *input, struct sn
 void snp_accept_memory(phys_addr_t start, phys_addr_t end);
 void __init snp_remap_svsm_caa(void);
 int snp_get_vmpl(void);
+int snp_svsm_attest_services(void *nonce, u32 nonce_size,
+                            void *report, u32 *report_size,
+                            void *services_manifest, u32 *services_manifest_size,
+                            void *certs, u32 *certs_size);
 #else
 static inline void sev_es_ist_enter(struct pt_regs *regs) { }
 static inline void sev_es_ist_exit(void) { }
@@ -302,6 +321,13 @@ static inline int snp_issue_guest_request(u64 exit_code, struct snp_req_data *in
 static inline void snp_accept_memory(phys_addr_t start, phys_addr_t end) { }
 static inline void snp_remap_svsm_caa(void) { }
 static inline int snp_get_vmpl(void) { return 0; }
+static inline int snp_svsm_attest_services(void *nonce, u32 nonce_size,
+                                          void *report, u32 *report_size,
+                                          void *services_manifest, u32 *services_manifest_size,
+                                          void *certs, u32 *certs_size)
+{
+       return 0;
+}
 #endif
 
 #endif
