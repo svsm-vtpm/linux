@@ -2495,7 +2495,8 @@ static int tpm_send_buffer(u8 *buffer)
 	struct svsm_call call = {};
 
 	call.caa = __svsm_get_caa();
-	call.rax = (2UL<<32)+1;
+	/* Protocol 2, Call ID 1 */
+	call.rax = ((u64)2 << 32) | (u64)1;
 	call.rcx = __pa(buffer);
 
 	return svsm_protocol(&call);
@@ -2504,7 +2505,8 @@ static int tpm_send_buffer(u8 *buffer)
 static int __init snp_init_platform_device(void)
 {
 	struct sev_guest_platform_data data;
-	u64 gpa;
+	u64 gpa, tpm_send_cmd_mask;
+	int ret;
 	struct svsm_call call = {};
 
 	if (!cc_platform_has(CC_ATTR_GUEST_SEV_SNP))
@@ -2524,17 +2526,24 @@ static int __init snp_init_platform_device(void)
 	pr_info("SNP guest platform device initialized.\n");
 
 	/*
-	 * The VTPM device is available only if we have a SVSM and it
-	 * probes correctly (probe is to send a call with no arguments
-	 * to function 8 and see it comes back as OK)
+	 * The SVSM_VTPM_QUERY call is used to query the support
+	 * provided by the VTPM.
+	 * The VTPM is able to take commands only if the query
+	 * runs successfully and the TPM_SEND_COMMAND bit is set
+	 * in the returned bitmap.
 	 */
 
 	call.caa = __svsm_get_caa();
-	call.rax = (2UL<<32)+1;
+	/* SVSM_VTPM_QUERY: Protocol 2, Call ID 0 */
+	call.rax = ((u64)2 << 32) | (u64)0;
 	call.rcx = 0;
+	ret = svsm_protocol_ret(&call);
+	/* TPM_SEND_COMMAND bit mask */
+	tpm_send_cmd_mask = (u64)1 << 8;
 
 	if (IS_ENABLED(CONFIG_TCG_PLATFORM) && svsm_vmpl &&
-	    svsm_protocol(&call) == 0) {
+	    ret == SVSM_SUCCESS &&
+	    (call.rcx & tpm_send_cmd_mask) == tpm_send_cmd_mask) {
 		struct tpm_platform_ops pops = {
 			.sendrcv = tpm_send_buffer,
 		};
